@@ -1,26 +1,36 @@
-version: "3"
 services:
-    mongo:
-        image: mongo
-        container_name: mongo
-        restart: always
-        environment:
-            MONGO_INITDB_DATABASE: ${MONGODB_DATABASE}
-            MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USERNAME}
-            MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD}
-        ports:
-            - ${MONGO_PORT}:${MONGO_PORT}
-    web:
-        build:
-            context: .
-            dockerfile: Dockerfile
-        command: gunicorn -w 4 -b 0.0.0.0:${FLASK_RUN_PORT} app:app
-        environment:
-          PYTHONUNBUFFERED: 1
-        ports:
-            - ${FLASK_RUN_PORT}:${FLASK_RUN_PORT}
-        depends_on:
-            - mongo
-        links:
-            - mongo
-        volumes: [".:/app"]
+  pegasus-app:
+    build: .
+    container_name: pegasus_app
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # --- Networking & Proxy ---
+      # Replace 'yourdomain.com' with your actual website domain (the same one used in EMAC_DOMAIN)
+      - VIRTUAL_HOST=pegasus.emac-dev.gsfc.nasa.gov
+      # This routes traffic from yourdomain.com/pegasus to this container
+      - VIRTUAL_PATH=/pegasus
+      # Helper for Nginx to know where to route
+      # - VIRTUAL_DEST=/
+      # IMPORTANT: Tells the proxy to talk to this container on port 5002 (where Flask runs)
+      - VIRTUAL_PORT=5002
+      
+      # --- Flask Settings ---
+      - FLASK_APP=app.py
+      - FLASK_RUN_HOST=0.0.0.0
+      - FLASK_RUN_PORT=5002
+      # This strips '/pegasus' from the incoming URL so Flask matches the '/' route
+      - SCRIPT_NAME=/pegasus
+      # This ensures generated links include '/pegasus'
+      # You might need to set this if you have static file issues
+      - APPLICATION_ROOT=/pegasus
+    
+    command: gunicorn --bind 0.0.0.0:5002 app:app --forwarded-allow-ips='*'      
+      
+    networks:
+      - git_default
+
+networks:
+  git_default:
+    external: true

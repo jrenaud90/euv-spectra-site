@@ -5,6 +5,8 @@ from pymongo import MongoClient
 from os import environ
 from euv_spectra_app.config import Config
 import flask_monitoringdashboard as dashboard
+from flask_monitoringdashboard.database import session_scope
+from flask_monitoringdashboard.database import Base, engine
 
 cache = Cache()
 
@@ -21,8 +23,12 @@ app.jinja_env.filters['zip'] = zip
 
 dashboard.config.init_from(file='/config.py')
 dashboard.config.blueprint_url_prefix = '/apps/pegasus'
-dashboard.config.database_name = 'sqlite:////app/dashboard/dashboard.db'
 
+# Override the create_all to use checkfirst=True
+try:
+    Base.metadata.create_all(engine, checkfirst=True)
+except Exception as e:
+    print(f'Dashboard DB init warning (non-fatal): {e}')
 dashboard.bind(app)
 
 

@@ -152,7 +152,7 @@
         <small>
             NOTES: <br> 
             <sup>1</sup> In units of ergs/s/cm<sup>2</sup>/Å, scaled to stellar surface and corrected for photospheric contribution. <br>
-            <sup>2</sup> See More Info About FITS Products <a href="/about">Here</a> <br>
+            <sup>2</sup> See More Info About FITS Products <a href="{{ url_for('main.about') }}">Here</a> <br>
             <sup>3</sup> If a GALEX flux is saturated, models are searched with corresponding flux values greater than or equal to the GALEX saturated flux value. <br>
             <sup>4</sup> If a GALEX flux is an upper limit, models are searched with corresponding flux values less than or equal to the GALEX upper limit flux value. <br>
             <sup>5</sup> Upper limit and saturated searches have two options, Option A and Option B. Option A searches for any corresponding flux values above the saturated flux value, and/or any corresponding flux values below the upper limit flux value. Option B uses the flux prediction equations on the <a href="{{ url_for('main.faqs', question_id='Q3') }}">FAQ page</a> to predict values for the saturated/upper limit flux. If the predicted flux is greater than the saturated flux/less than the upper limit flux, the predicted flux is used for another search under Option B.<br>

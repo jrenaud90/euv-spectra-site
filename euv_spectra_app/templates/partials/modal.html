@@ -23,7 +23,7 @@
                 </p>
 
                 {% if active_page == 'home' %}
-                    <a href="/"><button class="btn-close mx-3" data-bs-dismiss="modal" aria-label="Close"></button></a>
+                    <a href="{{ url_for('main.homepage') }}"><button class="btn-close mx-3" data-bs-dismiss="modal" aria-label="Close"></button></a>
                 {% else %}
                     <button class="btn-close mx-3" data-bs-dismiss="modal" aria-label="Close"></button>
                 {% endif %}

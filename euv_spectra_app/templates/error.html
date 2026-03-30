@@ -3,7 +3,7 @@
 {% block title %}Error{% endblock %}
 {% block content %}
     <div class="mt-5">
-        <a href="/" class="me-auto">← Back to home</a>
+        <a href="{{ url_for('main.homepage') }}" class="me-auto">← Back to home</a>
     </div>
     <div class="text-center">
         <h1>Oops...</h1>

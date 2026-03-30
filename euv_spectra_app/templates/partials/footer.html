@@ -1,14 +1,14 @@
 {% set footer_bar = [
-    ('/', 'home', 'Home'),
-    ('/about', 'about', 'About'),
-    ('/faqs', 'faqs', 'FAQs'),
-    ('/all-spectra', 'all-spectra', 'All Spectra'),
-    ('/acknowledgements', 'acknowledgements', 'Acknowledgements')
+    (url_for('main.homepage'), 'home', 'Home'),
+    (url_for('main.about'), 'about', 'About'),
+    (url_for('main.faqs'), 'faqs', 'FAQs'),
+    (url_for('main.index_spectra'), 'all-spectra', 'All Spectra'),
+    (url_for('main.acknowledgements'), 'acknowledgements', 'Acknowledgements')
 ] -%}
 
 <footer class="d-flex flex-wrap justify-content-between align-items-center py-3 mb-3 mx-5 border-top mt-auto">
     <p {% if active_page == 'home' %} class="col-md-4 mb-0 text-light" {% else %} class="col-md-4 mb-0 text-secondary" {% endif%}>© 2022 PHOENIX PEGASUS Grid, Beta V2.0 (Under Construction) Image Credit: NASA/SDO</p>
-    <a href="/" class="col-md-4 d-flex align-items-center justify-content-center mb-3 text-decoration-none">
+    <a href="{{ url_for('main.homepage') }}" class="col-md-4 d-flex align-items-center justify-content-center mb-3 text-decoration-none">
         <img src="{{url_for('static', filename='imgs/icon.png')}}" alt="" width="50px">
     </a>
     <ul class="nav col-md-4 justify-content-end">

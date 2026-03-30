@@ -185,7 +185,18 @@ class StellarTarget():
             if 2400 < data['st_teff'].unmasked.value < 5500:
                 # if 'M' in data['st_spectype'] or 'K' in data['st_spectype']:
                 self.teff = data['st_teff'].unmasked.value
-                self.logg = data['st_logg']
+                # handle dex unit safely:
+                try:
+                    logg_val = data['st_logg']
+                    if hasattr(logg_val, 'unmasked'):
+                        logg_val = logg_val.unmasked
+                    if hasattr(logg_val, 'value'):
+                        self.logg = float(logg_val.value)
+                    else:
+                        self.logg = float(logg_val)
+                except Exception as e:
+                    print(f'Warning: could not parse st_logg: {e}')
+                    self.logg = None
                 self.mass = data['st_mass'].unmasked.value
                 self.rad = data['st_rad'].unmasked.value
                 self.dist = data['sy_dist'].unmasked.value

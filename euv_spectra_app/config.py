@@ -30,3 +30,6 @@ class Config(object):
     # for captcha
     RECAPTCHA_PUBLIC_KEY = os.getenv("RECAPTCHA_PUBLIC_KEY")
     RECAPTCHA_PRIVATE_KEY = os.getenv("RECAPTCHA_SECRET_KEY")
+
+    # Flask Monitoring Dashboard
+    FLASK_MONITORING_DASHBOARD_CONFIG = '/app/dashboard/dashboard.db'

@@ -21,12 +21,12 @@ app.jinja_env.filters['zip'] = zip
 
 dashboard.config.init_from(file='/config.py')
 dashboard.config.blueprint_url_prefix = '/apps/pegasus'
+dashboard.config.database_name = 'sqlite:////app/dashboard/dashboard.db'
+
 dashboard.bind(app)
 
-# hello!
 
 
-#test number 2!
 
 # ======= DB Setup ==========
 uri = environ.get('MONGODB_URI')

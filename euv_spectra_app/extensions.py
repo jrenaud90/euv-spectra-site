@@ -12,11 +12,15 @@ app = Flask(__name__)
 app.config.from_object(Config)
 app.secret_key = environ.get('SECRET_KEY')
 
+app.config['APPLICATION_ROOT'] = environ.get('APPLICATION_ROOT', '/apps/pegasus')
+app.config['PREFERRED_URL_SCHEME'] = environ.get('PREFERRED_URL_SCHEME', 'https')
+
 cache.init_app(app)
 mail = Mail(app)
 app.jinja_env.filters['zip'] = zip
 
 dashboard.config.init_from(file='/config.py')
+dashboard.config.blueprint_url_prefix = '/apps/pegasus'
 dashboard.bind(app)
 
 # hello!

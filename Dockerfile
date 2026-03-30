@@ -19,4 +19,4 @@ RUN pip3 install -r requirements.txt
 EXPOSE 5002
 
 # Run app.py when the container launches
-CMD ["gunicorn", "--bind", "0.0.0.0:5002", "app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5002", "app:app", "--forwarded-allow-ips=*"]

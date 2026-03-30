@@ -30,7 +30,12 @@ dashboard.bind(app)
 
 # ======= DB Setup ==========
 uri = environ.get('MONGODB_URI')
-client = MongoClient(uri)
+client = MongoClient(
+    uri,
+    serverSelectionTimeoutMS=10000,   # 10s to find a server
+    connectTimeoutMS=10000,            # 10s to establish connection
+    socketTimeoutMS=60000,             # 60s for individual operations
+)
 my_db = environ.get('MONGODB_DATABASE')
 db = client.get_database(my_db)
 

@@ -6,6 +6,7 @@ from euv_spectra_app.extensions import *
 from euv_spectra_app.helpers_astroquery import StellarTarget, GalexFlux
 from euv_spectra_app.helpers import to_json
 from euv_spectra_app.helpers_dbqueries import get_matching_subtype, get_matching_photosphere, get_models_with_chi_squared, get_models_within_limits, get_models_with_weighted_fuv, get_flux_ratios
+from euv_spectra_app.extensions import cache
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -43,7 +44,6 @@ maybe:
 # Helper function to convert fluxes
 def convert_ujy_to_flux(flux, wv):
     return (((3e-5) * (flux * 10**-6)) / pow(wv, 2))
-
 
 @api.route('/', methods=['GET', 'POST'])
 def load_api():

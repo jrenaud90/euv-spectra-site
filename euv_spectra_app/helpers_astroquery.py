@@ -8,6 +8,10 @@ from astroquery.mast import Catalogs
 from astroquery.ipac.nexsci.nasa_exoplanet_archive import NasaExoplanetArchive
 from astroquery.simbad import Simbad
 
+# Set global astroquery timeouts
+Simbad.TIMEOUT = 30       # 30 seconds
+Catalogs.TIMEOUT = 30     # 30 seconds
+
 customSimbad = Simbad()
 customSimbad.remove_votable_fields('coordinates')
 customSimbad.add_votable_fields(

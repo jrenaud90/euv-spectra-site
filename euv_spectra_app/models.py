@@ -442,7 +442,7 @@ class GalexFluxes():
                 self.stellar_obj['teff'], self.stellar_obj['logg'], self.stellar_obj['mass'])
             return matching_photosphere_model
         except Exception:
-            return ('Cannot find a photosphere model. Please try again.')
+            return None
 
     def subtract_photosphere_flux(self, chosen_flux, photo_flux):
         """Subtracts the photospheric contributed flux from GALEX flux."""
@@ -468,6 +468,8 @@ class GalexFluxes():
         wv = None
         photo_flux = None
         photosphere_data = self.get_photosphere_model()
+        if not isinstance(photosphere_data, dict):
+            raise ValueError('Unable to retrieve photosphere model data from database.')
         if flux_type == 'fuv':
             wv = 1542.3
             photo_flux = photosphere_data['fuv']

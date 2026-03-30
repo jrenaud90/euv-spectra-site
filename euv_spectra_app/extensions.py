@@ -3,6 +3,7 @@ from flask_mail import Mail
 from flask_caching import Cache
 from pymongo import MongoClient
 from os import environ
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from euv_spectra_app.config import Config
 import flask_monitoringdashboard as dashboard
 from flask_monitoringdashboard.database import session_scope
@@ -36,13 +37,31 @@ dashboard.bind(app)
 
 # ======= DB Setup ==========
 uri = environ.get('MONGODB_URI')
+my_db = environ.get('MONGODB_DATABASE')
+
+
+def _ensure_auth_source(mongo_uri, db_name):
+    """Add authSource=<db_name> if credentials are present and authSource is missing."""
+    if not mongo_uri:
+        return mongo_uri
+    parsed = urlparse(mongo_uri)
+    if not parsed.username or not db_name:
+        return mongo_uri
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if 'authSource' in query:
+        return mongo_uri
+    query['authSource'] = db_name
+    new_query = urlencode(query)
+    return urlunparse(parsed._replace(query=new_query))
+
+
+uri = _ensure_auth_source(uri, my_db)
 client = MongoClient(
     uri,
     serverSelectionTimeoutMS=10000,   # 10s to find a server
     connectTimeoutMS=10000,            # 10s to establish connection
     socketTimeoutMS=60000,             # 60s for individual operations
 )
-my_db = environ.get('MONGODB_DATABASE')
 db = client.get_database(my_db)
 
 # ======= Collections ==========

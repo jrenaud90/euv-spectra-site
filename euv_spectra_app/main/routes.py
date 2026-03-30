@@ -275,7 +275,15 @@ def return_results():
         ]
         """———————————END TEST FILE DATA——————————"""
         # STEP 2: Prepare GALEX fluxes for searching the grid
-        stellar_object.fluxes.convert_scale_photosphere_subtract_fluxes()
+        try:
+            stellar_object.fluxes.convert_scale_photosphere_subtract_fluxes()
+        except Exception as e:
+            error_msg = (
+                'Unable to process GALEX fluxes with current database data. '
+                'Please verify MongoDB credentials/seeded collections and try again. '
+                f'Details: {e}'
+            )
+            return redirect(url_for('main.error', msg=error_msg))
 
         # STEP 3: Create new PegasusGrid object and insert the stellar object with corrected fluxes
         pegasus = PegasusGrid(stellar_object)
@@ -625,7 +633,7 @@ def send_email():
         return redirect(url_for('main.error', msg='Contact form unavailable at this time, please email phoenixpegasusgrid@gmail.com directly.'))
 
 
-@main.route('/error/<msg>')
+@main.route('/error/<path:msg>')
 def error(msg):
     """Custom error page."""
     show_nexsci_error_msg = False

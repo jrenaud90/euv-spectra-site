@@ -1,4 +1,4 @@
-<form action="/manual-submit" method="POST" class="p-4">
+<form action="{{ url_for('main.submit_manual_form') }}" method="POST" class="p-4">
     {{ manual_form.csrf_token }}
     {{ manual_form.hidden_tag() }}
     <h5 class="mb-3 text-center"><hr class="mt-1">Input Stellar Parameters and GALEX Data Manually</h5>

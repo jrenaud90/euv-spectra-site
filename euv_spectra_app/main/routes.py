@@ -4,16 +4,21 @@ import os
 import zipfile
 import io
 import itertools
+import logging
 from pymongo.errors import PyMongoError
 from flask import Blueprint, request, render_template, redirect, url_for, session, flash, current_app, jsonify, send_file, send_from_directory
 from flask_mail import Message
 from datetime import timedelta
 from euv_spectra_app.admin_utils import admin_auth_configured, admin_required, clear_admin_session, get_allowed_collection_names, get_collection_summaries, is_admin_authenticated, issue_admin_challenge, mark_admin_authenticated, parse_json_document, parse_uploaded_documents, verify_admin_signature
+from euv_spectra_app.errors import PegasusError
 from euv_spectra_app.extensions import *
 from euv_spectra_app.main.forms import AdminDeleteForm, AdminSignatureForm, AdminUploadForm, ManualForm, StarNameForm, PositionForm, ModalForm, ContactForm
 from euv_spectra_app.models import StellarObject, PegasusGrid
 from euv_spectra_app.helpers import build_flux_context, create_plotly_graph, deserialize_stellar_object, from_json, insert_data_into_form, remove_objs_from_obj_dict, serialize_stellar_object, to_json
 main = Blueprint("main", __name__)
+
+
+logger = logging.getLogger(__name__)
 
 
 STELLAR_OBJECT_SESSION_KEY = 'stellar_object'
@@ -53,12 +58,12 @@ def homepage():
     if request.method == 'POST':
         if position_form.validate_on_submit():
             # Home position form
-            print('position form validated!')
+            current_app.logger.info('Processing position-based homepage submission.')
             stellar_object.position = position_form.coords.data
             stellar_object.get_stellar_parameters()
         elif name_form.validate_on_submit():
             # Home name form
-            print(f'name form validated!')
+            current_app.logger.info('Processing name-based homepage submission.')
             stellar_object.star_name = name_form.star_name.data
             stellar_object.get_stellar_parameters()
 
@@ -151,21 +156,17 @@ def submit_manual_form():
                     flux_value = float(getattr(form, flux).data)
                     flux_err_value = getattr(form, flux_err).data
                     # if galex unit is in magnitude (mag), convert to flux (in microjanskies)
-                    print(f'CONVERTING {flux} WITH VAL {flux_value} FROM MAG TO FLUX')
+                    current_app.logger.debug('Converting %s magnitude input to flux units.', flux.upper())
                     flux_converted = stellar_object.fluxes.convert_mag_to_ujy(flux_value, str(flux))
                     # if there is an error, get the error as well (there is an error if it is not None or not 0)
                     if flux_err_value is not None and flux_err_value != '0':
                         upper_lim = flux_value + float(flux_err_value)
                         lower_lim = flux_value - float(flux_err_value)
-                        print(f'Upper limit of {flux}: {upper_lim}. Lower limit of {flux}: {lower_lim}')
                         upper_lim_converted = stellar_object.fluxes.convert_mag_to_ujy(upper_lim, str(flux))
                         lower_lim_converted = stellar_object.fluxes.convert_mag_to_ujy(lower_lim, str(flux))
-                        print(f'CONVERTED Upper limit of {flux}: {upper_lim_converted}. Lower limit of {flux}: {lower_lim_converted}')
                         up_err = upper_lim_converted - flux_converted
                         low_err = flux_converted - lower_lim_converted
-                        print(f'NEW UPPER VAL: {up_err}, NEW LOW VAL: {low_err}')
                         err_converted = (up_err + low_err) / 2
-                        print(f'SETTING THE CONVERTED FLUX ERR {flux_err} TO {err_converted}')
                         setattr(stellar_object.fluxes, flux_err, err_converted)
                     # Reassign form value so if checked again in flag check, will assign to converted val
                     getattr(form, flux).data = flux_converted
@@ -176,15 +177,12 @@ def submit_manual_form():
                         if flag == 'saturated':
                             # assign to saturated value
                             flux_saturated = f'{flux}_saturated'
-                            print(f'SETTING THE CONVERTED SATURATED FLUX {flux_saturated} TO {flux_converted}')
                             setattr(stellar_object.fluxes, flux_saturated, flux_converted)
                         elif flag == 'upper_limit':
                             # assign to upper limit value
                             flux_upper_limit = f'{flux}_upper_limit'
-                            print(f'SETTING THE CONVERTED UPPER LIMIT FLUX {flux_upper_limit} TO {flux_converted}')
                             setattr(stellar_object.fluxes, flux_upper_limit, flux_converted)
                     else:
-                        print(f'SETTING THE CONVERTED FLUX {flux} TO {flux_converted}')
                         # else, assign converted flux to normal fuv attribute
                         setattr(stellar_object.fluxes, flux, flux_converted)
                 elif 'flag' in fieldname:
@@ -231,9 +229,7 @@ def submit_manual_form():
         stellar_object.fluxes.check_null_fluxes()
         stellar_object.fluxes.check_saturated_fluxes()
         stellar_object.fluxes.check_upper_limit_fluxes()
-        print('FINAL')
-        print(vars(stellar_object))
-        print(vars(stellar_object.fluxes))
+        current_app.logger.info('Manual submission validated and stored in session.')
         # store stellar object is session as json
         session[STELLAR_OBJECT_SESSION_KEY] = serialize_stellar_object(stellar_object)
         return redirect(url_for('main.return_results'))
@@ -260,14 +256,12 @@ def return_results():
         return redirect(url_for('main.homepage'))
     # Deserialize the JSON formatted string back into an object
     stellar_object = deserialize_stellar_object(target_json)
-    print('STELLAR OBJ RETURN', vars(stellar_object),
-          vars(stellar_object.fluxes))
     # Populate the modal form with data from object
     insert_data_into_form(stellar_object, modal_form)
 
     # STEP 1: Check if all stellar intrinstic parameters are available to start querying pegasus
     if stellar_object.has_all_stellar_parameters():
-        print('HAS ALL STELLAR PARAMETERS, CONTINUING')
+        current_app.logger.info('Rendering results for a session with complete stellar parameters.')
         '''———————————FOR TESTING PURPOSES (Test file)——————————'''
         # original test filename is M0.Teff=3850.logg=4.78.TRgrad=9.cmtop=6.cmin=4.fits
         test_filepaths = [
@@ -291,21 +285,25 @@ def return_results():
         # STEP 2: Prepare GALEX fluxes for searching the grid
         try:
             stellar_object.fluxes.convert_scale_photosphere_subtract_fluxes()
-        except Exception as e:
-            error_msg = (
-                'Unable to process GALEX fluxes with current database data. '
-                'Please verify MongoDB credentials/seeded collections and try again. '
-                f'Details: {e}'
-            )
+        except PegasusError as exc:
+            current_app.logger.warning(exc.log_message)
+            error_msg = exc.user_message
+            return redirect(url_for('main.error', msg=error_msg))
+        except (TypeError, ValueError, KeyError, PyMongoError) as exc:
+            current_app.logger.warning('Unable to process GALEX fluxes: %s', exc)
+            error_msg = 'Unable to process GALEX fluxes with current database data. Please try again later or enter your values manually.'
             return redirect(url_for('main.error', msg=error_msg))
 
         # STEP 3: Create new PegasusGrid object and insert the stellar object with corrected fluxes
         pegasus = PegasusGrid(stellar_object)
 
         # STEP 4: Search the model_parameter_grid collection to find closest matching stellar subtype
-        subtype = pegasus.query_pegasus_subtype()
+        try:
+            subtype = pegasus.query_pegasus_subtype()
+        except PegasusError as exc:
+            current_app.logger.warning(exc.log_message)
+            return redirect(url_for('main.error', msg=exc.user_message))
         stellar_object.model_subtype = subtype['model']
-        print('SUBTYPE', stellar_object.model_subtype)
 
         # STEP 5: Check if model subtype data exists in database
         model_collection = f'{stellar_object.model_subtype.lower()}_grid'
@@ -382,9 +380,12 @@ def return_results():
             # STEP 10.1: Retrieve the fuv and nuv values using the keys from the dictionaries
             fuv_value = fuv_dict[fuv_key]
             nuv_value = nuv_dict[nuv_key]
-            print(f'SEARCHING USING FUV: {fuv_value}, NUV:{nuv_value}')
             # STEP 10.2: Call the search_db function with the fuv and nuv values
-            models = pegasus.query_model_collection(fuv_value, nuv_value)
+            try:
+                models = pegasus.query_model_collection(fuv_value, nuv_value)
+            except PegasusError as exc:
+                current_app.logger.warning(exc.log_message)
+                return redirect(url_for('main.error', msg=exc.user_message))
             # STEP 10.3: Do additional processing on the returned models depending on the flag
             # SATURATED/UPPER LIMIT WORK FLOW:
                 # If one val is saturated/upper limit and one val is normal and no models are returned,
@@ -397,21 +398,27 @@ def return_results():
                 if len(models) > 0:
                     flash(f'{len(models)} results found within the upper and lower limits of your submitted UV fluxes.', 'success')
                 if len(models) == 0:
-                    print(f'NO MODELS FOUND IN FIRST SAT SEARCH, GROWING BARS BY 3')
                     # grow nuv error bars by three
                     nuv_copy = nuv_value.copy()
                     nuv_copy['error'] = nuv_copy['error'] * 3
-                    models = pegasus.query_model_collection(
-                        fuv_value, nuv_copy)
+                    try:
+                        models = pegasus.query_model_collection(
+                            fuv_value, nuv_copy)
+                    except PegasusError as exc:
+                        current_app.logger.warning(exc.log_message)
+                        return redirect(url_for('main.error', msg=exc.user_message))
                     if len(models) > 0:
                         flash(f'{len(models)} results found within 3 σ of the GALEX NUV flux.', 'success')
                 if len(models) == 0:
-                    print(f'NO MODELS FOUND IN FIRST SAT SEARCH, GROWING BARS BY 5')
                     # grow nuv error bars by five
                     nuv_copy = nuv_value.copy()
                     nuv_copy['error'] = nuv_copy['error'] * 5
-                    models = pegasus.query_model_collection(
-                        fuv_value, nuv_copy)
+                    try:
+                        models = pegasus.query_model_collection(
+                            fuv_value, nuv_copy)
+                    except PegasusError as exc:
+                        current_app.logger.warning(exc.log_message)
+                        return redirect(url_for('main.error', msg=exc.user_message))
                     if len(models) > 0:
                         flash(f'{len(models)} results found within 5 σ of the GALEX NUV flux.', 'success')
                 if len(models) == 0:
@@ -423,20 +430,26 @@ def return_results():
                     flash(f'{len(models)} results found within the upper and lower limits of your submitted UV fluxes.', 'success')
                 if len(models) == 0:
                     # grow fuv error bars by three
-                    print(f'NO MODELS FOUND IN FIRST UPPER LIM SEARCH, GROWING BARS BY 3')
                     fuv_copy = fuv_value.copy()
                     fuv_copy['error'] = fuv_copy['error'] * 3
-                    models = pegasus.query_model_collection(
-                        fuv_copy, nuv_value)
+                    try:
+                        models = pegasus.query_model_collection(
+                            fuv_copy, nuv_value)
+                    except PegasusError as exc:
+                        current_app.logger.warning(exc.log_message)
+                        return redirect(url_for('main.error', msg=exc.user_message))
                     if len(models) > 0:
                         flash(f'{len(models)} results found within 3 σ of the GALEX FUV flux.', 'success')
                 if len(models) == 0:
                     # grow fuv error bars by three
-                    print(f'NO MODELS FOUND IN FIRST UPPER LIM SEARCH, GROWING BARS BY 5')
                     fuv_copy = fuv_value.copy()
                     fuv_copy['error'] = fuv_copy['error'] * 5
-                    models = pegasus.query_model_collection(
-                        fuv_copy, nuv_value)
+                    try:
+                        models = pegasus.query_model_collection(
+                            fuv_copy, nuv_value)
+                    except PegasusError as exc:
+                        current_app.logger.warning(exc.log_message)
+                        return redirect(url_for('main.error', msg=exc.user_message))
                     if len(models) > 0:
                         flash(f'{len(models)} results found within 5 σ of the GALEX FUV flux.', 'success')
                 if len(models) == 0:
@@ -477,9 +490,13 @@ def return_results():
             if fuv_value['flag'] == 'normal' and nuv_value['flag'] == 'normal':
                 if len(models) == 0:
                     # Do chi squared test between all models within selected subgrid and corrected observation
-                    models_with_chi_squared = pegasus.query_pegasus_chi_square()
+                    try:
+                        models_with_chi_squared = pegasus.query_pegasus_chi_square()
+                        models_weighted = pegasus.query_pegasus_weighted_fuv()
+                    except PegasusError as exc:
+                        current_app.logger.warning(exc.log_message)
+                        return redirect(url_for('main.error', msg=exc.user_message))
                     # If there are no models found within limits, return models ONLY with FUV < NUV, return with chi squared values
-                    models_weighted = pegasus.query_pegasus_weighted_fuv()
                     if len(models_weighted) > 0:
                         # If there are weighted results, use those
                         flash('No results found within upper and lower limits of UV fluxes. Returning document with nearest chi squared value weighted towards the FUV.', 'warning')

@@ -1,8 +1,12 @@
 import json
+import logging
 from astropy.io import fits
 import plotly.graph_objects as go
 from euv_spectra_app.extensions import *
 from euv_spectra_app.models import StellarObject, ProperMotionData, GalexFluxes
+
+
+logger = logging.getLogger(__name__)
 
 
 def build_flux_context(stellar_object):
@@ -57,7 +61,7 @@ def to_json(obj):
         return to_json(obj.__dict__)
 
     # If all else fails, raise a TypeError
-    print('JSON not of any valid object', obj, type(obj))
+    logger.warning('Encountered non-serializable object of type %s', type(obj).__name__)
     raise TypeError(f'Object of type {type(obj)} is not JSON serializable')
 
 

@@ -9,9 +9,6 @@ from os import environ
 import tempfile
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from euv_spectra_app.config import Config
-import flask_monitoringdashboard as dashboard
-from flask_monitoringdashboard.database import session_scope
-from flask_monitoringdashboard.database import Base, engine
 
 cache = Cache()
 session_manager = Session()
@@ -69,6 +66,9 @@ def _init_dashboard():
     if not app.config.get('DASHBOARD_ENABLED'):
         logger.info('Flask Monitoring Dashboard is disabled for this deployment.')
         return
+
+    import flask_monitoringdashboard as dashboard
+    from flask_monitoringdashboard.database import Base, engine
 
     config_file = _build_dashboard_config_file()
     if not config_file:

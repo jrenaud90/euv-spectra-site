@@ -1,4 +1,5 @@
 # FOR ASTROQUERY/GALEX DATA
+import logging
 import numpy.ma as ma
 import math
 import requests
@@ -9,8 +10,13 @@ from astropy.coordinates import SkyCoord, Distance
 from astroquery.mast import Catalogs
 from astroquery.ipac.nexsci.nasa_exoplanet_archive import NasaExoplanetArchive
 from astroquery.simbad import Simbad
+from pymongo.errors import PyMongoError
+from euv_spectra_app.errors import CatalogLookupError, DataProcessingError, ModelSelectionError
 from euv_spectra_app.extensions import db
 from euv_spectra_app.helpers_dbqueries import get_matching_subtype, get_matching_photosphere, search_db, get_models_with_chi_squared, get_models_with_weighted_fuv, get_flux_ratios
+
+
+logger = logging.getLogger(__name__)
 
 customSimbad = Simbad()
 customSimbad.remove_votable_fields('coordinates')
@@ -48,17 +54,26 @@ class ProperMotionData():
             galex_time = db.mast_galex_times.find_one(
                 {'target': star_name})['t_min']
         except TypeError as te:
-            print(f'Galex obs time in depth error: {te}')
-            return(f'GALEX Error: Did not find matches in GALEX observations for {star_name if star_name else coords}. Unable to correct for proper motion.')
+            logger.warning('Missing GALEX observation time for %s: %s', star_name or coords, te)
+            raise CatalogLookupError(
+                f'GALEX Error: Did not find matches in GALEX observations for {star_name if star_name else coords}. Unable to correct for proper motion.',
+                log_message=f'Missing GALEX observation time for {star_name or coords}: {te}',
+                recoverable=True,
+            ) from te
         except KeyError as ke:
-            print(f'GALEX Error: GALEX obs time in depth error: {ke}')
-            return(f'GALEX Error: Did not find matches in GALEX observations for {star_name if star_name else coords}. Unable to correct for proper motion.')
+            logger.warning('GALEX observation record missing t_min for %s: %s', star_name or coords, ke)
+            raise CatalogLookupError(
+                f'GALEX Error: Did not find matches in GALEX observations for {star_name if star_name else coords}. Unable to correct for proper motion.',
+                log_message=f'GALEX observation record missing t_min for {star_name or coords}: {ke}',
+                recoverable=True,
+            ) from ke
         except ValueError as ve:
-            print(f'Galex obs time in depth error: {ve}')
-            return(f'GALEX Error: Unable to search GALEX observations for {star_name if star_name else coords}. Unable to correct for proper motion.')
-        except Exception as e:
-            print(f'Galex obs time in depth error: {e}')
-            return(f'GALEX Error: No GALEX observations found for {star_name if star_name else coords}. Unable to correct for proper motion.')
+            logger.warning('Invalid GALEX observation lookup for %s: %s', star_name or coords, ve)
+            raise CatalogLookupError(
+                f'GALEX Error: Unable to search GALEX observations for {star_name if star_name else coords}. Unable to correct for proper motion.',
+                log_message=f'Invalid GALEX observation lookup for {star_name or coords}: {ve}',
+                recoverable=True,
+            ) from ve
         else:
             try:
                 # STEP 2: If observation time is found, start coordinate correction by initializing variables
@@ -81,8 +96,12 @@ class ProperMotionData():
                     dt=td_year * u.yr)
                 # STEP 7: Add new coordinates to return data dict
                 return (skycoord_obj.ra.degree, skycoord_obj.dec.degree)
-            except Exception as e:
-                return (f'Unknown error during proper motion correction: {e}')
+            except (TypeError, ValueError) as exc:
+                logger.warning('Proper motion correction failed for %s: %s', star_name or coords, exc)
+                raise DataProcessingError(
+                    'Unable to correct coordinates for proper motion. Please enter GALEX flux values manually or try again later.',
+                    log_message=f'Proper motion correction failed for {star_name or coords}: {exc}',
+                ) from exc
 
 """——————————————————————————————GALEX FLUXES OBJECT——————————————————————————————"""   
 
@@ -398,16 +417,16 @@ class GalexFluxes():
         late_m = ['M6', 'M7', 'M8', 'M9', 'M5']
         # STEP 1: Check that stellar_subtype value exists
         if 'stellar_subtype' not in self.stellar_obj:
-            print('DOES NOT HAVE A STELLAR SUBTYPE')
+            logger.info('Skipping flux prediction because stellar subtype is unavailable.')
             return ('Cannot predict flux without stellar subtype. Please run the get_stellar_subtype function for your stellar object and try again.')
         elif self.stellar_obj['stellar_subtype'] in early_m:
-            print('STAR IS EARLY M:', self.stellar_obj['stellar_subtype'])
+            logger.debug('Using early-M flux prediction path.')
             self.predict_early_ms(flux_val, flux_err, flux_type)
         elif self.stellar_obj['stellar_subtype'] in late_m:
-            print('STAR IS LATE M:', self.stellar_obj['stellar_subtype'])
+            logger.debug('Using late-M flux prediction path.')
             self.predict_late_ms(flux_val, flux_err, flux_type)
         else:
-            print('Not an m star?')
+            logger.info('Skipping flux prediction for unsupported stellar subtype %s', self.stellar_obj['stellar_subtype'])
             return ('Can only run predictions on M stars at the moment.')
 
     def convert_mag_to_ujy(self, num, flux_type):
@@ -441,7 +460,8 @@ class GalexFluxes():
             matching_photosphere_model = get_matching_photosphere(
                 self.stellar_obj['teff'], self.stellar_obj['logg'], self.stellar_obj['mass'])
             return matching_photosphere_model
-        except Exception:
+        except (IndexError, KeyError, PyMongoError, TypeError) as exc:
+            logger.warning('Unable to fetch photosphere model: %s', exc)
             return None
 
     def subtract_photosphere_flux(self, chosen_flux, photo_flux):
@@ -477,7 +497,7 @@ class GalexFluxes():
             wv = 2274.4
             photo_flux = photosphere_data['nuv']
         else:
-            return ('Can only run calculations on fuv or nuv flux types. Please input one of these and try again.')
+            raise DataProcessingError('Can only process FUV or NUV flux values.')
         converted_flux = self.convert_ujy_to_flux_density(flux, wv)
         scaled_flux = self.scale_flux(converted_flux)
         photosub_flux = self.subtract_photosphere_flux(scaled_flux, photo_flux)
@@ -581,10 +601,10 @@ class StellarObject():
         # STEP 1: Check for search type (position or name)
         if self.position:
             # STEP Pos1: Change coordinates to ra and dec
-            converted_coords = self.convert_coords(self.position)
-            if converted_coords is not None:
-                # will stop function if coords were not converted into usable format
-                self.modal_page_error_msg = converted_coords
+            try:
+                self.convert_coords(self.position)
+            except CatalogLookupError as exc:
+                self.modal_page_error_msg = exc.user_message
                 return
         elif self.star_name:
             # STEP Name1: Check if name is in the mast target database 
@@ -599,48 +619,41 @@ class StellarObject():
                     self.star_name = name
                     break
             # STEP Name2: Get coordinate and proper motion info from Simbad
-            simbad_data = self.query_simbad(self.star_name)
-            if simbad_data is not None:
-                # will stop function if no coords found in SIMBAD
-                self.modal_error_msgs.append(simbad_data)
+            try:
+                self.query_simbad(self.star_name)
+            except CatalogLookupError as exc:
+                self.modal_error_msgs.append(exc.user_message)
             # STEP Name3: Put PM and Coord info into proper motion correction function
-            pm_corrected_coords = None
             if self.pm_data is not None:
-                pm_corrected_coords = self.pm_data.correct_pm(
-                    self.star_name, self.coords)
-            # if the returned data is a tuple, this means it returned an RA and DEC, assign values as coords
-            if isinstance(pm_corrected_coords, tuple):
-                self.pm_corrected_coords = pm_corrected_coords
-            # else, if the return data is not tuple and is string this means exception/error was thrown 
-            # and error message is returned. Append the error message as either a regular or galex modal 
-            # error message.
-            elif isinstance(pm_corrected_coords, str):
-                if 'GALEX' not in pm_corrected_coords:
-                    # if it is a regular error message, this means something went wrong with the coordinates/object 
-                    # and the search needs to break because the same coords/object will not search on the NEA dataset
-                    self.modal_page_error_msg = pm_corrected_coords
-                    return
-                else:
-                    # else if it is just a GALEX error, we can continue onto searching the NASA Exoplanet Archive 
-                    # for stellar intrinsic parameters
-                    self.modal_error_msgs.append(pm_corrected_coords)
+                try:
+                    self.pm_corrected_coords = self.pm_data.correct_pm(
+                        self.star_name, self.coords)
+                except (CatalogLookupError, DataProcessingError) as exc:
+                    if exc.recoverable:
+                        self.modal_error_msgs.append(exc.user_message)
+                    else:
+                        self.modal_page_error_msg = exc.user_message
+                        return
         # STEP 2: Search NASA Exoplanet Archive with the search term & type
-        nea_data = self.query_nasa_exoplanet_archive(self.star_name, self.coords)
-        if nea_data is not None:
-            # if the NEA search didn't return anything, then the object either doesn't exist or isn't an exoplanet 
-            # host star. Functionality is not built in yet for non-exoplanet host stars, so we break the function 
-            # and tell user to input parameters manually.
-
-            # self.modal_page_error_msg = nea_data
-            self.modal_error_msgs.append(nea_data)
-            # return
+        nea_data = None
+        try:
+            self.query_nasa_exoplanet_archive(self.star_name, self.coords)
+        except CatalogLookupError as exc:
+            nea_data = exc
+            self.modal_error_msgs.append(exc.user_message)
         # STEP 3: Get the stellar subtype. Needed for GALEX flux predictions if a flux is null
-        self.get_stellar_subtype(self.teff, self.logg, self.mass)
+        if self.teff is not None and self.logg is not None and self.mass is not None:
+            try:
+                self.get_stellar_subtype(self.teff, self.logg, self.mass)
+            except DataProcessingError as exc:
+                self.modal_error_msgs.append(exc.user_message)
         # STEP 4: Check if coordinate correction happened then search GALEX with corrected/converted coords
-        galex_data = self.query_galex(self.star_name, self.position, self.pm_corrected_coords, self.coords)
-        if galex_data is not None:
-            self.modal_error_msgs.append(galex_data)
-            # return
+        galex_data = None
+        try:
+            self.query_galex(self.star_name, self.position, self.pm_corrected_coords, self.coords)
+        except CatalogLookupError as exc:
+            galex_data = exc
+            self.modal_error_msgs.append(exc.user_message)
         
         # STEP 5: Check that at least one main search returned data
         if nea_data is not None and galex_data is not None:
@@ -666,11 +679,15 @@ class StellarObject():
             self.coords = (c.ra.degree, c.dec.degree)
             return
         except ValueError as ve:
-            return (f'Invalid position attribute: {ve}')
+            raise CatalogLookupError(
+                f'Invalid position attribute: {ve}',
+                log_message=f'Invalid position attribute {position}: {ve}',
+            ) from ve
         except TypeError as te:
-            return (f'Invalid position attribute: {te}')
-        except Exception as e:
-            return (f'Unknown error during coordinate conversion: {e}')
+            raise CatalogLookupError(
+                f'Invalid position attribute: {te}',
+                log_message=f'Invalid position attribute {position}: {te}',
+            ) from te
 
     def query_simbad(self, star_name):
         """Searches the SIMBAD astronomical database to retrieve data on a specified star.
@@ -688,7 +705,11 @@ class StellarObject():
             # Check if SIMBAD is accessible
             simbad_response = requests.get("http://simbad.cds.unistra.fr/simbad/")
             if simbad_response.status_code != 200:
-                return "Error connecting to SIMBAD. Cannot get data to correct for proper motion. Please enter GALEX flux values manually or try again later."
+                raise CatalogLookupError(
+                    'Error connecting to SIMBAD. Cannot get data to correct for proper motion. Please enter GALEX flux values manually or try again later.',
+                    log_message=f'SIMBAD health check returned status {simbad_response.status_code}',
+                    recoverable=True,
+                )
             
             result_table = customSimbad.query_object(star_name)
             if result_table and len(result_table) > 0:
@@ -701,13 +722,25 @@ class StellarObject():
                     self.pm_data.rad_vel = data['RV_VALUE']
                 return
             else:
-                return (f'No results found in SIMBAD for {star_name}. Please check spelling, spacing, and or capitalization and try again.')
+                raise CatalogLookupError(
+                    f'No results found in SIMBAD for {star_name}. Please check spelling, spacing, and or capitalization and try again.',
+                    log_message=f'No SIMBAD result for {star_name}',
+                    recoverable=True,
+                )
         except requests.exceptions.RequestException as rqe:
-            print(f'In depth SIMBAD error: {rqe}')
-            return f"Error connecting to SIMBAD. Cannot get data to correct for proper motion. Please enter GALEX flux values manually or try again later."
-        except Exception as e:
-            print(f'In depth SIMBAD error: {e}')
-            return (f'Unknown error during SIMBAD search: {e}')
+            logger.warning('SIMBAD request failed for %s: %s', star_name, rqe)
+            raise CatalogLookupError(
+                'Error connecting to SIMBAD. Cannot get data to correct for proper motion. Please enter GALEX flux values manually or try again later.',
+                log_message=f'SIMBAD request failed for {star_name}: {rqe}',
+                recoverable=True,
+            ) from rqe
+        except (TypeError, ValueError, KeyError) as exc:
+            logger.warning('SIMBAD returned unusable data for %s: %s', star_name, exc)
+            raise CatalogLookupError(
+                'SIMBAD returned unusable target data. Please enter GALEX flux values manually or try again later.',
+                log_message=f'SIMBAD returned unusable data for {star_name}: {exc}',
+                recoverable=True,
+            ) from exc
 
     def query_nasa_exoplanet_archive(self, star_name, coords):
         """Searches the NASA Exoplanet Archive for stellar parameters.
@@ -733,7 +766,11 @@ class StellarObject():
         try:
             nea_response = requests.get("https://exoplanetarchive.ipac.caltech.edu/")
             if nea_response.status_code != 200:
-                return "The NASA Exoplanet Archive is currently down. Please enter stellar parameters manually or try again later."
+                raise CatalogLookupError(
+                    'The NASA Exoplanet Archive is currently down. Please enter stellar parameters manually or try again later.',
+                    log_message=f'NEA health check returned status {nea_response.status_code}',
+                    recoverable=True,
+                )
             
             if star_name:
                 corrected_star_name = star_name.replace("'", "''")
@@ -755,14 +792,31 @@ class StellarObject():
                     self.dist = data['sy_dist'].unmasked.value
                     return
                 else:
-                    return (f'{star_name if star_name else coords} is not an M or K type star. Data is currently only available for these spectral sybtypes.')
+                    raise CatalogLookupError(
+                        f'{star_name if star_name else coords} is not an M or K type star. Data is currently only available for these spectral sybtypes.',
+                        log_message=f'Unsupported stellar type returned for {star_name or coords}',
+                        recoverable=True,
+                    )
             else:
-                return (f'Nothing found for {star_name if star_name else coords} in the NExSci database.')
+                raise CatalogLookupError(
+                    f'Nothing found for {star_name if star_name else coords} in the NExSci database.',
+                    log_message=f'No NEA result for {star_name or coords}',
+                    recoverable=True,
+                )
         except requests.exceptions.RequestException as rqe:
-            print(f'In depth NEA error: {rqe}')
-            return "Error connecting to the NASA Exoplanet Archive. Please enter stellar parameters manually or try again later."
-        except Exception as e:
-            return f"Unknown error occured when searching the NASA Exoplanet Archive: {e}"
+            logger.warning('NEA request failed for %s: %s', star_name or coords, rqe)
+            raise CatalogLookupError(
+                'Error connecting to the NASA Exoplanet Archive. Please enter stellar parameters manually or try again later.',
+                log_message=f'NEA request failed for {star_name or coords}: {rqe}',
+                recoverable=True,
+            ) from rqe
+        except (TypeError, ValueError, KeyError, AttributeError) as exc:
+            logger.warning('NEA returned unusable data for %s: %s', star_name or coords, exc)
+            raise CatalogLookupError(
+                'Unable to use the NASA Exoplanet Archive response for this target. Please enter stellar parameters manually or try again later.',
+                log_message=f'NEA returned unusable data for {star_name or coords}: {exc}',
+                recoverable=True,
+            ) from exc
 
     def query_galex(self, star_name, position, pm_corrected_coords, coords):
         """Searches the MAST GALEX database by coordinates for flux densities.
@@ -795,7 +849,11 @@ class StellarObject():
             # Check if SIMBAD is accessible
             mast_response = requests.get("https://galex.stsci.edu/GR6/?page=mastform")
             if mast_response.status_code != 200:
-                return "Error connecting to MAST. Please enter GALEX flux values manually or try again later."
+                raise CatalogLookupError(
+                    'Error connecting to MAST. Please enter GALEX flux values manually or try again later.',
+                    log_message=f'MAST health check returned status {mast_response.status_code}',
+                    recoverable=True,
+                )
             
             galex_data = None
             if star_name and pm_corrected_coords:
@@ -845,26 +903,54 @@ class StellarObject():
                         return
                     else:
                         # No results within 0.167 arc minutes
-                        return 'GALEX Error: No detection in GALEX FUV and NUV. Look under question 3 on the FAQ page for more information.'
+                        raise CatalogLookupError(
+                            'GALEX Error: No detection in GALEX FUV and NUV. Look under question 3 on the FAQ page for more information.',
+                            log_message=f'GALEX returned no close match for {star_name or coords}',
+                            recoverable=True,
+                        )
                 else:
                     # No results found for the GALEX catalog query
-                    return (f'GALEX Error: No GALEX observations found. Please enter flux values manually or approximate flux values using the proxy table under question 3 on the FAQ page.')
+                    raise CatalogLookupError(
+                        'GALEX Error: No GALEX observations found. Please enter flux values manually or approximate flux values using the proxy table under question 3 on the FAQ page.',
+                        log_message=f'GALEX returned no observations for {star_name or coords}',
+                        recoverable=True,
+                    )
             else:
                 # No results found because proper info was not given for example, will happen if 
                 # proper motion correction did not occur and is therefore not given
-                return (f'GALEX Error: Missing data to query GALEX {"because coordinates were not corrected for proper motion" if star_name else f"for {coords}"}. Please enter flux values manually or approximate flux values using the proxy table under question 3 on the FAQ page.')
+                raise CatalogLookupError(
+                    f'GALEX Error: Missing data to query GALEX {"because coordinates were not corrected for proper motion" if star_name else f"for {coords}"}. Please enter flux values manually or approximate flux values using the proxy table under question 3 on the FAQ page.',
+                    log_message=f'GALEX query missing coordinates for {star_name or coords}',
+                    recoverable=True,
+                )
         except requests.exceptions.RequestException as rqe:
-            print(f'Galex search in depth error: {rqe}')
-            return f"Error connecting to MAST. Please enter GALEX flux values manually or try again later."
+            logger.warning('MAST request failed for %s: %s', star_name or coords, rqe)
+            raise CatalogLookupError(
+                'Error connecting to MAST. Please enter GALEX flux values manually or try again later.',
+                log_message=f'MAST request failed for {star_name or coords}: {rqe}',
+                recoverable=True,
+            ) from rqe
         except ResolverError as re:
-            print(f'Galex search in depth error: {re}')
-            return (f'GALEX Error: Could not search GALEX catalog with object {coords if position else pm_corrected_coords}. Please enter flux values manually or approximate flux values using the proxy table under question 3 on the FAQ page.')
+            logger.warning('GALEX resolver error for %s: %s', star_name or coords, re)
+            raise CatalogLookupError(
+                f'GALEX Error: Could not search GALEX catalog with object {coords if position else pm_corrected_coords}. Please enter flux values manually or approximate flux values using the proxy table under question 3 on the FAQ page.',
+                log_message=f'GALEX resolver error for {star_name or coords}: {re}',
+                recoverable=True,
+            ) from re
         except ValueError as ve:
-            print(f'Galex search in depth error: {ve}')
-            return (f'GALEX Error: Could not search GALEX catalog with object {coords if position else pm_corrected_coords}. Please enter flux values manually or approximate flux values using the proxy table under question 3 on the FAQ page.')
-        except Exception as e:
-            print(f'Galex search in depth error: {e}')
-            return (f'GALEX Error: Unknown error during GALEX search: {e}')
+            logger.warning('GALEX search received invalid data for %s: %s', star_name or coords, ve)
+            raise CatalogLookupError(
+                f'GALEX Error: Could not search GALEX catalog with object {coords if position else pm_corrected_coords}. Please enter flux values manually or approximate flux values using the proxy table under question 3 on the FAQ page.',
+                log_message=f'GALEX search received invalid data for {star_name or coords}: {ve}',
+                recoverable=True,
+            ) from ve
+        except (TypeError, KeyError) as exc:
+            logger.warning('GALEX returned unusable data for %s: %s', star_name or coords, exc)
+            raise CatalogLookupError(
+                'GALEX returned unusable flux data for this target. Please enter flux values manually or try again later.',
+                log_message=f'GALEX returned unusable data for {star_name or coords}: {exc}',
+                recoverable=True,
+            ) from exc
     
     def get_stellar_subtype(self, teff, logg, mass):
         """Assigns the matching PEGASUS grid stellar subtype to object.
@@ -886,11 +972,19 @@ class StellarObject():
             try:
                 self.stellar_subtype = matching_subtype['model']
             except TypeError as te:
-                print(f'In depth stellar subtype search error:', te)
-                return(f'No PEGASUS subtype found with inputs: teff={teff}, logg={logg}, and mass={mass}. Please check your input(s) and try again, or manually input your values on the home page manual form.')
-        except Exception as e:
-            print(f'In depth stellar subtype search error:', e)
-            return(f'Unable to find stellar subtype with inputs: teff={teff}, logg={logg}, and mass={mass}. Please check your input and try again, or manually input your values on the home page manual form.')
+                logger.warning('Subtype record missing model for teff=%s logg=%s mass=%s: %s', teff, logg, mass, te)
+                raise DataProcessingError(
+                    f'No PEGASUS subtype found with inputs: teff={teff}, logg={logg}, and mass={mass}. Please check your input(s) and try again, or manually input your values on the home page manual form.',
+                    log_message=f'Subtype record missing model for teff={teff} logg={logg} mass={mass}: {te}',
+                    recoverable=True,
+                ) from te
+        except (IndexError, KeyError, PyMongoError, TypeError) as exc:
+            logger.warning('Unable to find stellar subtype for teff=%s logg=%s mass=%s: %s', teff, logg, mass, exc)
+            raise DataProcessingError(
+                f'Unable to find stellar subtype with inputs: teff={teff}, logg={logg}, and mass={mass}. Please check your input and try again, or manually input your values on the home page manual form.',
+                log_message=f'Unable to find stellar subtype for teff={teff} logg={logg} mass={mass}: {exc}',
+                recoverable=True,
+            ) from exc
 
 """——————————————————————————————PEGASUS GRID OBJECT——————————————————————————————"""   
 
@@ -908,16 +1002,23 @@ class PegasusGrid():
                 self.stellar_obj.teff, self.stellar_obj.logg, self.stellar_obj.mass)
             self.stellar_obj.model_collection = f"{matching_subtype['model'].lower()}_grid"
             return matching_subtype
-        except Exception as e:
-            return ('Error fetching PEGASUS models:', e)
+        except (IndexError, KeyError, PyMongoError, TypeError) as exc:
+            logger.warning('Unable to determine PEGASUS subtype for current stellar object: %s', exc)
+            raise ModelSelectionError(
+                'Unable to determine a PEGASUS model subtype for the submitted stellar parameters.',
+                log_message=f'Unable to determine PEGASUS subtype: {exc}',
+            ) from exc
     
     def query_model_collection(self, fuv, nuv):
         try:
             models = search_db(self.stellar_obj.model_collection, fuv, nuv)
             return list(models)
-        except Exception as e:
-            print(f'Error fetching PEGASUS model: {e}')
-            return (f'Error fetching PEGASUS model: {e}')
+        except (PyMongoError, TypeError, ValueError, KeyError) as exc:
+            logger.warning('Unable to query model collection %s: %s', getattr(self.stellar_obj, 'model_collection', None), exc)
+            raise ModelSelectionError(
+                'Unable to query PEGASUS models for the submitted flux values.',
+                log_message=f'Unable to query model collection {getattr(self.stellar_obj, "model_collection", None)}: {exc}',
+            ) from exc
 
     def query_pegasus_chi_square(self):
         """Queries pegasus models based on chi square of fuv and nuv flux densities.
@@ -926,8 +1027,12 @@ class PegasusGrid():
             model_with_chi_squared = get_models_with_chi_squared(
                 self.stellar_obj.fluxes.processed_nuv, self.stellar_obj.fluxes.processed_fuv, self.stellar_obj.model_collection)
             return list(model_with_chi_squared)
-        except Exception as e:
-            return ('Error fetching PEGASUS models:', e)
+        except (PyMongoError, TypeError, ValueError, KeyError) as exc:
+            logger.warning('Unable to calculate chi-squared PEGASUS models: %s', exc)
+            raise ModelSelectionError(
+                'Unable to rank PEGASUS models for the submitted flux values.',
+                log_message=f'Unable to calculate chi-squared PEGASUS models: {exc}',
+            ) from exc
 
     def query_pegasus_weighted_fuv(self):
         """Queries pegasus models based on weighted FUV and chi square.
@@ -936,8 +1041,12 @@ class PegasusGrid():
             models_weighted = get_models_with_weighted_fuv(
                 self.stellar_obj.fluxes.processed_nuv, self.stellar_obj.fluxes.processed_fuv, self.stellar_obj.model_collection)
             return models_weighted
-        except Exception as e:
-            return ('Error fetching PEGASUS models:', e)
+        except (PyMongoError, TypeError, ValueError, KeyError) as exc:
+            logger.warning('Unable to calculate weighted-FUV PEGASUS models: %s', exc)
+            raise ModelSelectionError(
+                'Unable to rank PEGASUS models for the submitted flux values.',
+                log_message=f'Unable to calculate weighted-FUV PEGASUS models: {exc}',
+            ) from exc
 
     def query_pegasus_flux_ratio(self):
         """Queries pegasus models based on chi square of flux ratio.
@@ -946,5 +1055,9 @@ class PegasusGrid():
             models_with_ratios = get_flux_ratios(
                 self.stellar_obj.fluxes.processed_nuv, self.stellar_obj.fluxes.processed_fuv, self.stellar_obj.model_collection)
             return list(models_with_ratios)
-        except Exception as e:
-            return ('Error fetching PEGASUS models:', e)
+        except (PyMongoError, TypeError, ValueError, KeyError) as exc:
+            logger.warning('Unable to calculate flux-ratio PEGASUS models: %s', exc)
+            raise ModelSelectionError(
+                'Unable to rank PEGASUS models for the submitted flux values.',
+                log_message=f'Unable to calculate flux-ratio PEGASUS models: {exc}',
+            ) from exc

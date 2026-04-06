@@ -1,4 +1,5 @@
 from flask_wtf import FlaskForm, RecaptchaField
+from flask_wtf.file import FileField, FileRequired
 from wtforms import StringField, SelectField, SubmitField, DecimalField, RadioField, TextAreaField
 from wtforms.validators import DataRequired, Email, Optional, NumberRange, InputRequired, ValidationError
 from flask import Markup
@@ -184,3 +185,30 @@ class ContactForm(FlaskForm):
     message = TextAreaField('Message', validators=[DataRequired()])
     recaptcha = RecaptchaField()
     submit = SubmitField('Send')
+
+
+class AdminSignatureForm(FlaskForm):
+    signature = TextAreaField('Base64 Signature', validators=[DataRequired()])
+    submit = SubmitField('Authenticate')
+
+
+class AdminUploadForm(FlaskForm):
+    collection = SelectField('Collection', validators=[DataRequired()], choices=[])
+    mode = SelectField('Load Mode', validators=[DataRequired()], choices=[
+        ('append', 'Append documents'),
+        ('replace', 'Replace collection contents'),
+    ])
+    payload_file = FileField('JSON / NDJSON File', validators=[FileRequired()])
+    confirm_replace = StringField('Type REPLACE to confirm destructive replace')
+    submit = SubmitField('Load Data')
+
+
+class AdminDeleteForm(FlaskForm):
+    collection = SelectField('Collection', validators=[DataRequired()], choices=[])
+    delete_scope = RadioField('Delete Scope', validators=[DataRequired()], default='matching', choices=[
+        ('matching', 'Delete documents matching the filter'),
+        ('all', 'Delete the entire collection contents'),
+    ])
+    filter_json = TextAreaField('Mongo Filter (JSON)', validators=[DataRequired()], default='{}')
+    confirm_collection = StringField('Type the collection name to confirm full deletion')
+    submit = SubmitField('Delete Data')

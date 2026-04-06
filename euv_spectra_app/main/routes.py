@@ -4,18 +4,24 @@ import os
 import zipfile
 import io
 import itertools
+from pymongo.errors import PyMongoError
 from flask import Blueprint, request, render_template, redirect, url_for, session, flash, current_app, jsonify, send_file, send_from_directory
 from flask_mail import Message
 from datetime import timedelta
+from euv_spectra_app.admin_utils import admin_auth_configured, admin_required, clear_admin_session, get_allowed_collection_names, get_collection_summaries, is_admin_authenticated, issue_admin_challenge, mark_admin_authenticated, parse_json_document, parse_uploaded_documents, verify_admin_signature
 from euv_spectra_app.extensions import *
-from euv_spectra_app.main.forms import ManualForm, StarNameForm, PositionForm, ModalForm, ContactForm
+from euv_spectra_app.main.forms import AdminDeleteForm, AdminSignatureForm, AdminUploadForm, ManualForm, StarNameForm, PositionForm, ModalForm, ContactForm
 from euv_spectra_app.models import StellarObject, PegasusGrid
 from euv_spectra_app.helpers import insert_data_into_form, to_json, from_json, create_plotly_graph, remove_objs_from_obj_dict
 main = Blueprint("main", __name__)
 
 @main.context_processor
 def inject_form():
-    return dict(contact_form=ContactForm())
+    return dict(
+        contact_form=ContactForm(),
+        admin_auth_enabled=admin_auth_configured(),
+        admin_is_authenticated=is_admin_authenticated(),
+    )
 
 
 @main.before_request
@@ -593,6 +599,97 @@ def download(filename, model):
 def about():
     """About page."""
     return render_template('about.html')
+
+
+@main.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    """Challenge-response login for admin data management."""
+    if not admin_auth_configured():
+        return redirect(url_for('main.error', msg='Admin authentication is not configured for this deployment.'))
+
+    auth_form = AdminSignatureForm(prefix='auth')
+    challenge = issue_admin_challenge(force=request.method == 'GET')
+
+    if request.method == 'POST' and request.form.get('auth-submit'):
+        if auth_form.validate_on_submit():
+            try:
+                verify_admin_signature(auth_form.signature.data)
+            except ValueError as exc:
+                clear_admin_session()
+                challenge = issue_admin_challenge(force=True)
+                flash(str(exc), 'danger')
+            else:
+                mark_admin_authenticated()
+                flash('Admin authentication successful.', 'success')
+                return redirect(url_for('main.admin_panel'))
+
+    return render_template('admin-login.html', auth_form=auth_form, challenge=challenge)
+
+
+@main.route('/admin/logout', methods=['POST'])
+def admin_logout():
+    """Terminate admin session."""
+    clear_admin_session()
+    flash('Admin session cleared.', 'info')
+    return redirect(url_for('main.homepage'))
+
+
+@main.route('/admin', methods=['GET', 'POST'])
+@admin_required
+def admin_panel():
+    """Administrative data management for MongoDB-backed Pegasus collections."""
+    collection_choices = [(name, name) for name in get_allowed_collection_names()]
+
+    upload_form = AdminUploadForm(prefix='upload')
+    upload_form.collection.choices = collection_choices
+
+    delete_form = AdminDeleteForm(prefix='delete')
+    delete_form.collection.choices = collection_choices
+
+    if request.method == 'POST' and request.form.get('upload-submit'):
+        if upload_form.validate_on_submit():
+            collection_name = upload_form.collection.data
+            try:
+                documents = parse_uploaded_documents(upload_form.payload_file.data)
+                collection = db.get_collection(collection_name)
+                if upload_form.mode.data == 'replace':
+                    if (upload_form.confirm_replace.data or '').strip() != 'REPLACE':
+                        raise ValueError('Type REPLACE to confirm replacing the collection contents.')
+                    collection.delete_many({})
+
+                insert_result = collection.insert_many(documents)
+                flash(f'Loaded {len(insert_result.inserted_ids)} documents into {collection_name}.', 'success')
+                return redirect(url_for('main.admin_panel'))
+            except (ValueError, PyMongoError) as exc:
+                flash(str(exc), 'danger')
+
+    if request.method == 'POST' and request.form.get('delete-submit'):
+        if delete_form.validate_on_submit():
+            collection_name = delete_form.collection.data
+            collection = db.get_collection(collection_name)
+            try:
+                if delete_form.delete_scope.data == 'all':
+                    if (delete_form.confirm_collection.data or '').strip() != collection_name:
+                        raise ValueError(f'Type {collection_name} exactly to confirm full deletion.')
+                    delete_result = collection.delete_many({})
+                else:
+                    filter_query = parse_json_document(delete_form.filter_json.data)
+                    if filter_query == {}:
+                        raise ValueError('An empty filter would delete the entire collection. Use the explicit delete-all option instead.')
+                    delete_result = collection.delete_many(filter_query)
+
+                flash(f'Deleted {delete_result.deleted_count} documents from {collection_name}.', 'success')
+                return redirect(url_for('main.admin_panel'))
+            except (ValueError, PyMongoError) as exc:
+                flash(str(exc), 'danger')
+
+    return render_template(
+        'admin-panel.html',
+        upload_form=upload_form,
+        delete_form=delete_form,
+        collection_summaries=get_collection_summaries(),
+        database_name=db.name,
+    )
 
 
 @main.route('/faqs', methods=['GET'])

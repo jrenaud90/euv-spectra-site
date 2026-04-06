@@ -57,3 +57,10 @@ And I wish to thank my mentor, the lead in the PEGASUS project, Dr. Sarah Peacoc
 
 ### Contacts
 If there are any questions regarding access, use, errors, or more, please email me at maliabarker[at]icloud.com
+
+## Local deployment notes
+
+- Copy `apps/pegasus/.env.example` to `apps/pegasus/.env` and fill in the Flask, mail, Mongo, and admin-key settings.
+- The shared compose stack starts `pegasus_mongodb` alongside the Flask container and restores the repository backup archive on first boot.
+- The restore script expects the archive source database to be `mydatabase`; override `MONGODB_ARCHIVE_SOURCE_DB` if your backup changes.
+- Admin data management is exposed at `/apps/pegasus/admin` and requires signing a server-issued challenge with the configured private key.

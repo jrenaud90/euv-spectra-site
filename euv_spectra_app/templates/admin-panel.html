@@ -1,0 +1,113 @@
+{% extends 'base.html' %}
+{% set active_page = 'admin' %}
+
+{% block title %}Admin Panel{% endblock %}
+
+{% block content %}
+    <div class="row mt-4 pt-4 g-4">
+        <div class="col-12 d-flex justify-content-between align-items-center flex-wrap gap-3">
+            <div>
+                <h2 class="mb-1">Pegasus Data Admin</h2>
+                <p class="text-muted mb-0">Connected database: <span class="font-monospace">{{ database_name }}</span></p>
+            </div>
+            <form method="POST" action="{{ url_for('main.admin_logout') }}">
+                <button type="submit" class="btn btn-outline-secondary">Log Out</button>
+            </form>
+        </div>
+
+        <div class="col-lg-7">
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    <h3 class="h5 mb-3">Load Data</h3>
+                    <form method="POST" enctype="multipart/form-data">
+                        {{ upload_form.hidden_tag() }}
+                        <div class="mb-3">
+                            {{ upload_form.collection.label(class_='form-label') }}
+                            {{ upload_form.collection(class_='form-select') }}
+                        </div>
+                        <div class="mb-3">
+                            {{ upload_form.mode.label(class_='form-label') }}
+                            {{ upload_form.mode(class_='form-select') }}
+                        </div>
+                        <div class="mb-3">
+                            {{ upload_form.payload_file.label(class_='form-label') }}
+                            {{ upload_form.payload_file(class_='form-control') }}
+                            <div class="form-text">Accepts a JSON array, a single JSON document, or newline-delimited JSON.</div>
+                        </div>
+                        <div class="mb-3">
+                            {{ upload_form.confirm_replace.label(class_='form-label') }}
+                            {{ upload_form.confirm_replace(class_='form-control font-monospace', placeholder='REPLACE') }}
+                        </div>
+                        {{ upload_form.submit(class_='btn btn-primary') }}
+                    </form>
+                </div>
+            </div>
+
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <h3 class="h5 mb-3">Delete Data</h3>
+                    <form method="POST">
+                        {{ delete_form.hidden_tag() }}
+                        <div class="mb-3">
+                            {{ delete_form.collection.label(class_='form-label') }}
+                            {{ delete_form.collection(class_='form-select') }}
+                        </div>
+                        <div class="mb-3">
+                            {{ delete_form.delete_scope.label(class_='form-label d-block') }}
+                            {% for subfield in delete_form.delete_scope %}
+                                <div class="form-check mb-2">
+                                    {{ subfield(class_='form-check-input') }}
+                                    {{ subfield.label(class_='form-check-label') }}
+                                </div>
+                            {% endfor %}
+                        </div>
+                        <div class="mb-3">
+                            {{ delete_form.filter_json.label(class_='form-label') }}
+                            {{ delete_form.filter_json(class_='form-control font-monospace', rows='6') }}
+                            <div class="form-text">Use Mongo-style JSON. Extended JSON such as {"_id": {"$oid": "..."}} is supported.</div>
+                        </div>
+                        <div class="mb-3">
+                            {{ delete_form.confirm_collection.label(class_='form-label') }}
+                            {{ delete_form.confirm_collection(class_='form-control font-monospace') }}
+                        </div>
+                        {{ delete_form.submit(class_='btn btn-danger') }}
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="card shadow-sm h-100">
+                <div class="card-body">
+                    <h3 class="h5 mb-3">Collection Overview</h3>
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Collection</th>
+                                    <th>Documents</th>
+                                    <th>Sample Keys</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for summary in collection_summaries %}
+                                    <tr>
+                                        <td class="font-monospace">{{ summary.name }}</td>
+                                        <td>{{ summary.documents }}</td>
+                                        <td>
+                                            {% if summary.sample_keys %}
+                                                <span class="small">{{ summary.sample_keys|join(', ') }}</span>
+                                            {% else %}
+                                                <span class="text-muted small">Empty</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+{% endblock %}

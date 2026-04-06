@@ -24,6 +24,11 @@
                         <a {% if id == active_page %} class="nav-link active" {% else %} class="nav-link" {% endif%} href="{{ href|e }}">{{ caption|e }}</a>
                     </li>
                 {% endfor %}
+                {% if admin_auth_enabled %}
+                    <li class="nav-item mx-2">
+                        <a {% if active_page == 'admin' %} class="nav-link active" {% else %} class="nav-link" {% endif %} href="{{ url_for('main.admin_panel' if admin_is_authenticated else 'main.admin_login') }}">Admin</a>
+                    </li>
+                {% endif %}
             </ul>
         </div>
     </div>

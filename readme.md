@@ -64,3 +64,4 @@ If there are any questions regarding access, use, errors, or more, please email 
 - The shared compose stack starts `pegasus_mongodb` alongside the Flask container and restores the repository backup archive on first boot.
 - The restore script expects the archive source database to be `mydatabase`; override `MONGODB_ARCHIVE_SOURCE_DB` if your backup changes.
 - Admin data management is exposed at `/apps/pegasus/admin` and requires signing a server-issued challenge with the configured private key.
+- Flask Monitoring Dashboard is disabled by default. If you need it, enable it explicitly with the `DASHBOARD_*` environment variables instead of editing tracked config files.

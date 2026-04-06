@@ -3,7 +3,10 @@ from flask_mail import Mail
 from flask_caching import Cache
 from flask_session import Session
 from pymongo import MongoClient
+import logging
+import os
 from os import environ
+import tempfile
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from euv_spectra_app.config import Config
 import flask_monitoringdashboard as dashboard
@@ -12,6 +15,7 @@ from flask_monitoringdashboard.database import Base, engine
 
 cache = Cache()
 session_manager = Session()
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config.from_object(Config)
@@ -25,15 +29,62 @@ session_manager.init_app(app)
 mail = Mail(app)
 app.jinja_env.filters['zip'] = zip
 
-dashboard.config.init_from(file='/config.py')
-dashboard.config.blueprint_url_prefix = '/apps/pegasus'
+def _build_dashboard_config_file():
+    config_path = app.config.get('DASHBOARD_CONFIG_PATH')
+    if config_path:
+        return config_path
 
-# Override the create_all to use checkfirst=True
-try:
-    Base.metadata.create_all(engine, checkfirst=True)
-except Exception as e:
-    print(f'Dashboard DB init warning (non-fatal): {e}')
-dashboard.bind(app)
+    required_values = {
+        'username': app.config.get('DASHBOARD_USERNAME'),
+        'password': app.config.get('DASHBOARD_PASSWORD'),
+        'security_token': app.config.get('DASHBOARD_SECURITY_TOKEN'),
+    }
+    missing_values = [name for name, value in required_values.items() if not value]
+    if missing_values:
+        logger.warning('Dashboard is enabled but missing required settings: %s', ', '.join(missing_values))
+        return None
+
+    config_lines = [
+        'APP_VERSION=1.0',
+        f"CUSTOM_LINK={app.config['DASHBOARD_CUSTOM_LINK']}",
+        f"MONITOR_LEVEL={app.config['DASHBOARD_MONITOR_LEVEL']}",
+        f"OUTLIER_DETECTION_CONSTANT={app.config['DASHBOARD_OUTLIER_DETECTION_CONSTANT']}",
+        f"USERNAME={app.config['DASHBOARD_USERNAME']}",
+        f"PASSWORD={app.config['DASHBOARD_PASSWORD']}",
+        f"GUEST_USERNAME={app.config['DASHBOARD_GUEST_USERNAME']}",
+        f"GUEST_PASSWORD={app.config['DASHBOARD_GUEST_PASSWORDS']}",
+        f"SECURITY_TOKEN={app.config['DASHBOARD_SECURITY_TOKEN']}",
+        f"DATABASE={app.config['DASHBOARD_DATABASE_URI']}",
+        f"TIMEZONE={app.config['DASHBOARD_TIMEZONE']}",
+        f"COLORS={app.config['DASHBOARD_COLORS']}",
+    ]
+
+    fd, generated_path = tempfile.mkstemp(prefix='pegasus_dashboard_', suffix='.cfg')
+    with os.fdopen(fd, 'w', encoding='utf-8') as config_file:
+        config_file.write('\n'.join(config_lines) + '\n')
+    return generated_path
+
+
+def _init_dashboard():
+    if not app.config.get('DASHBOARD_ENABLED'):
+        logger.info('Flask Monitoring Dashboard is disabled for this deployment.')
+        return
+
+    config_file = _build_dashboard_config_file()
+    if not config_file:
+        return
+
+    dashboard.config.init_from(file=config_file)
+    dashboard.config.blueprint_url_prefix = '/apps/pegasus'
+
+    try:
+        Base.metadata.create_all(engine, checkfirst=True)
+    except Exception as exc:
+        logger.warning('Dashboard DB init warning (non-fatal): %s', exc)
+    dashboard.bind(app)
+
+
+_init_dashboard()
 
 
 

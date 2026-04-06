@@ -172,6 +172,25 @@ cd /home/ubuntu/EMAC-Apps/apps
 sudo docker compose up -d --build pegasus
 ```
 
+### Using PuTTYgen
+
+- PuTTYgen is fine for generating the key pair, but Pegasus must receive the public key in a standard `PEM` or `OpenSSH public key` format.
+- The simplest option is to generate an `RSA 4096` key pair in PuTTYgen.
+- Save the private key for yourself, then export the public key in one of these formats:
+    - OpenSSH public key
+    - PEM public key
+- Point `ADMIN_PUBLIC_KEY_PATH` at that exported public key file, or paste its contents into `ADMIN_PUBLIC_KEY`.
+- If you only keep the `.ppk` file, convert or export it to a format your signing tool can use before trying to log in.
+
+Example `.env` entry:
+
+```env
+ADMIN_PUBLIC_KEY_PATH=/run/secrets/pegasus_admin_public_key.pem
+ADMIN_SESSION_MINUTES=30
+ADMIN_CHALLENGE_TTL_SECONDS=300
+ADMIN_ALLOWED_COLLECTIONS=model_parameter_grid,photosphere_models,mast_galex_times,m0_grid,m1_grid,m2_grid,m3_grid,m4_grid,m5_grid,m6_grid,m7_grid,m8_grid
+```
+
 ### Login flow
 
 - Open `/apps/pegasus/admin/login` in the browser.
@@ -179,6 +198,49 @@ sudo docker compose up -d --build pegasus
 - Sign that challenge with the private key that matches the configured public key.
 - Base64-encode the signature and paste it into the `Base64 Signature` field.
 - Submit the form to start an authenticated admin session.
+
+Example signing flow with an RSA private key exported from PuTTYgen in PEM format:
+
+```bash
+printf '%s' 'PASTE_CHALLENGE_HERE' > /tmp/pegasus-admin-challenge.txt
+openssl dgst -sha256 -sign /path/to/admin-private-key.pem /tmp/pegasus-admin-challenge.txt | base64 -w0
+```
+
+Paste the single-line base64 output into the login form.
+
+If you prefer Python instead of OpenSSL:
+
+```bash
+python3 - <<'PY'
+import base64
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
+
+challenge = b"PASTE_CHALLENGE_HERE"
+with open('/path/to/admin-private-key.pem', 'rb') as fh:
+    private_key = serialization.load_pem_private_key(fh.read(), password=None)
+
+signature = private_key.sign(challenge, padding.PKCS1v15(), hashes.SHA256())
+print(base64.b64encode(signature).decode())
+PY
+```
+
+There is also a helper script in this repository:
+
+```bash
+cd /home/ubuntu/EMAC-Apps/apps/pegasus
+python3 scripts/sign_admin_challenge.py --key /path/to/admin-private-key.pem 'PASTE_CHALLENGE_HERE'
+```
+
+That command prints the exact base64 string to paste into the admin login form.
+
+If the key is encrypted, omit `--password` and the script will prompt for it.
+
+You can also read the challenge from a file on another machine:
+
+```bash
+python3 scripts/sign_admin_challenge.py --key /path/to/admin-private-key.pem --challenge-file /path/to/challenge.txt
+```
 
 ### Access notes
 

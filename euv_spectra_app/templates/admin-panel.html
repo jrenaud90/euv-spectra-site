@@ -38,7 +38,18 @@
                             {{ upload_form.confirm_replace.label(class_='form-label') }}
                             {{ upload_form.confirm_replace(class_='form-control font-monospace', placeholder='REPLACE') }}
                         </div>
-                        {{ upload_form.submit(class_='btn btn-primary') }}
+                        <div class="d-flex flex-wrap gap-2">
+                            {{ upload_form.submit(class_='btn btn-primary') }}
+                            <a
+                                href="{{ url_for('main.admin_sample_json', collection=upload_form.collection.data or upload_form.collection.choices[0][0]) if upload_form.collection.choices else '#' }}"
+                                class="btn btn-outline-secondary"
+                                id="sample-json-link"
+                            >Sample JSON</a>
+                            <a
+                                href="{{ url_for('main.admin_download_archive') }}"
+                                class="btn btn-outline-dark"
+                            >Download All Data</a>
+                        </div>
                     </form>
                 </div>
             </div>
@@ -77,9 +88,27 @@
         </div>
 
         <div class="col-lg-5">
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    <h3 class="h5 mb-3">Instructions</h3>
+                    <ol class="mb-0 ps-3">
+                        <li class="mb-3">
+                            <strong>Add new data:</strong> Choose the target collection, leave the mode set to append, upload a JSON file, then click Load Data. New documents are inserted without clearing the existing collection.
+                        </li>
+                        <li class="mb-3">
+                            <strong>Replace current data:</strong> Choose the target collection, change the mode to replace, type <span class="font-monospace">REPLACE</span> in the confirmation box, then click Load Data. This clears the collection before inserting the uploaded documents.
+                        </li>
+                        <li>
+                            <strong>Delete data:</strong> Use the Delete Data form below Load Data. Pick either delete all, which requires typing the collection name exactly, or delete matching documents with a Mongo-style JSON filter. Use the download buttons first if you want a backup copy.
+                        </li>
+                    </ol>
+                </div>
+            </div>
+
             <div class="card shadow-sm h-100">
                 <div class="card-body">
                     <h3 class="h5 mb-3">Collection Overview</h3>
+                    <p class="text-muted small">Use Sample JSON to inspect one collection format, or Download All Data to retrieve the archived Mongo backup currently mounted for Pegasus.</p>
                     <div class="table-responsive">
                         <table class="table table-sm align-middle">
                             <thead>
@@ -110,4 +139,27 @@
             </div>
         </div>
     </div>
+{% endblock %}
+
+{% block script %}
+    <script>
+        (function () {
+            const collectionSelect = document.getElementById('upload-collection');
+            const sampleJsonLink = document.getElementById('sample-json-link');
+            if (!collectionSelect || !sampleJsonLink) {
+                return;
+            }
+
+            const baseUrl = '{{ url_for("main.admin_sample_json") }}';
+            const updateLink = function () {
+                const selectedCollection = collectionSelect.value;
+                sampleJsonLink.href = selectedCollection ? `${baseUrl}?collection=${encodeURIComponent(selectedCollection)}` : '#';
+                sampleJsonLink.classList.toggle('disabled', !selectedCollection);
+                sampleJsonLink.setAttribute('aria-disabled', selectedCollection ? 'false' : 'true');
+            };
+
+            collectionSelect.addEventListener('change', updateLink);
+            updateLink();
+        }());
+    </script>
 {% endblock %}

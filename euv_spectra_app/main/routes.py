@@ -5,6 +5,7 @@ import zipfile
 import io
 import itertools
 import logging
+from bson import json_util
 from pymongo.errors import PyMongoError
 from flask import Blueprint, request, render_template, redirect, url_for, session, flash, current_app, jsonify, send_file, send_from_directory
 from flask_mail import Message
@@ -724,6 +725,48 @@ def admin_panel():
         delete_form=delete_form,
         collection_summaries=get_collection_summaries(),
         database_name=db.name,
+    )
+
+
+@main.route('/admin/sample-json', methods=['GET'])
+@admin_required
+def admin_sample_json():
+    """Download a small sample payload from an allowed collection."""
+    collection_name = (request.args.get('collection') or '').strip()
+    allowed_collections = get_allowed_collection_names()
+    if not collection_name:
+        flash('Select a collection before downloading a sample JSON payload.', 'warning')
+        return redirect(url_for('main.admin_panel'))
+    if collection_name not in allowed_collections:
+        flash(f'{collection_name} is not an allowed admin collection.', 'danger')
+        return redirect(url_for('main.admin_panel'))
+
+    collection = db.get_collection(collection_name)
+    sample_documents = list(collection.find().limit(3))
+    payload = json_util.dumps(sample_documents, indent=2)
+    response = current_app.response_class(payload, mimetype='application/json')
+    response.headers['Content-Disposition'] = f'attachment; filename={collection_name}_sample.json'
+    return response
+
+
+@main.route('/admin/download-archive', methods=['GET'])
+@admin_required
+def admin_download_archive():
+    """Download the mounted Mongo archive used to seed Pegasus data."""
+    archive_path = current_app.config.get('MONGODB_ARCHIVE_DOWNLOAD_PATH')
+    if not archive_path:
+        flash('Mongo archive download is not configured for this deployment.', 'danger')
+        return redirect(url_for('main.admin_panel'))
+
+    if not os.path.isfile(archive_path):
+        flash('Mongo archive file is not available on this deployment.', 'danger')
+        return redirect(url_for('main.admin_panel'))
+
+    return send_file(
+        archive_path,
+        mimetype='application/octet-stream',
+        as_attachment=True,
+        download_name=os.path.basename(archive_path),
     )
 
 

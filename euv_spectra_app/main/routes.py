@@ -262,6 +262,7 @@ def return_results():
     # STEP 1: Check if all stellar intrinstic parameters are available to start querying pegasus
     if stellar_object.has_all_stellar_parameters():
         current_app.logger.info('Rendering results for a session with complete stellar parameters.')
+        allow_test_fits_fallback = current_app.config.get('ALLOW_TEST_FITS_FALLBACK', False)
         '''———————————FOR TESTING PURPOSES (Test file)——————————'''
         # original test filename is M0.Teff=3850.logg=4.78.TRgrad=9.cmtop=6.cmin=4.fits
         test_filepaths = [
@@ -515,29 +516,32 @@ def return_results():
                 # If there are saturated fluxes and this is a normal search, add saturated option B flag
                 # If there are upper limit fluxes and this is a normal search, add upper limit option B flag
                 # If there are both saturated and upper limit fluxes, add saturated and upper limit option A flag
-            # STEP 11.1: Append all models to the return models list for return table
-            return_models += models
-            # STEP 11.2: Iterate over each model returned and add data and flag (if applicable)
+            # STEP 11.1: Iterate over each model returned and add data and flag (if applicable)
             for doc in models:
                 # for each matching model that comes back, get the filepath so we can check if it exists later
                 filepath = os.path.abspath(
                     f"euv_spectra_app/fits_files/{stellar_object.model_subtype}/{doc['fits_filename']}")
+                selected_filepath = None
                 key = f'model_{model_index}'
                 plot_data[key] = {'index': model_index, # Add index for num tracking on return page
                                   'nuv': doc['nuv'], # Add NUV flux
                                   'fuv': doc['fuv'], # Add FUV flux
                                   'euv': doc['euv']} # Add EUV flux
                 model_index += 1 # After adding the model, increment the index
-                # Check if the model's filepath exists, if not use a test file
+                # Check if the model's filepath exists. Test fallback is opt-in only.
                 if os.path.exists(filepath):
-                    # if the filepath exists, add to plot data
-                    plot_data[key]['filepath'] = filepath
-                else:
-                    # else if the filepath doesn't exist, add a test file
+                    selected_filepath = filepath
+                elif allow_test_fits_fallback:
                     '''——————FOR TESTING PURPOSES (if FITS file is not yet available)—————'''
-                    plot_data[key]['filepath'] = test_filepaths[model_index-1]
-                    # set using test data to True so test flash message will be sent to return template
+                    selected_filepath = test_filepaths[model_index-1]
                     using_test_data = True
+                else:
+                    plot_data.pop(key, None)
+                    current_app.logger.warning('Skipping PEGASUS model %s because FITS file %s is unavailable.', doc.get('fits_filename'), filepath)
+                    continue
+
+                plot_data[key]['filepath'] = selected_filepath
+                return_models.append(doc)
                 # Now add the flag if there is one.
                 if (stellar_object.fluxes.fuv_is_saturated or stellar_object.fluxes.nuv_is_saturated) and (stellar_object.fluxes.fuv_is_upper_limit or stellar_object.fluxes.nuv_is_upper_limit):
                     # If there are both saturated and upper limit fluxes, add saturated and upper limit option A flag
@@ -556,6 +560,10 @@ def return_results():
                     # If there are upper limit fluxes and this is a normal search, add upper limit option B flag
                     if (fuv_value['flag'] == 'normal' and nuv_value['flag'] == 'normal'):
                         plot_data[key]['flag'] = 'Upper Limit Search<br> Option B<sup>[5]</sup>'
+        if not return_models:
+            error_msg = 'Matching PEGASUS model metadata was found, but no downloadable FITS files are currently available for this subtype.'
+            return redirect(url_for('main.error', msg=error_msg))
+
         # STEP 12: Generate plot using the compiled data
         plotly_fig = create_plotly_graph(plot_data)
         graphJSON = json.dumps(

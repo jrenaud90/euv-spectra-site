@@ -3,6 +3,8 @@ import logging
 import numpy.ma as ma
 import math
 import requests
+import time
+import warnings
 from astropy.time import Time
 import astropy.units as u
 from astroquery.exceptions import ResolverError
@@ -12,16 +14,142 @@ from astroquery.ipac.nexsci.nasa_exoplanet_archive import NasaExoplanetArchive
 from astroquery.simbad import Simbad
 from pymongo.errors import PyMongoError
 from euv_spectra_app.errors import CatalogLookupError, DataProcessingError, ModelSelectionError
-from euv_spectra_app.extensions import db
+from euv_spectra_app.extensions import app, cache, db
 from euv_spectra_app.helpers_dbqueries import get_matching_subtype, get_matching_photosphere, search_db, get_models_with_chi_squared, get_models_with_weighted_fuv, get_flux_ratios
 
 
 logger = logging.getLogger(__name__)
 
+REQUEST_TIMEOUT_SECONDS = app.config.get('EXTERNAL_REQUEST_TIMEOUT', 10)
+ASTROQUERY_TIMEOUT_SECONDS = app.config.get('ASTROQUERY_TIMEOUT', 30)
+HOSTNAME_CACHE_TIMEOUT_SECONDS = app.config.get('HOSTNAME_CACHE_TIMEOUT', 3600)
+EXTERNAL_RETRY_ATTEMPTS = app.config.get('EXTERNAL_RETRY_ATTEMPTS', 2)
+EXTERNAL_RETRY_BACKOFF_SECONDS = app.config.get('EXTERNAL_RETRY_BACKOFF_SECONDS', 1.0)
+EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT_SECONDS = app.config.get('EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT', 300)
+
+Simbad.TIMEOUT = ASTROQUERY_TIMEOUT_SECONDS
+Catalogs.TIMEOUT = ASTROQUERY_TIMEOUT_SECONDS
+NasaExoplanetArchive.TIMEOUT = ASTROQUERY_TIMEOUT_SECONDS
+
 customSimbad = Simbad()
 customSimbad.remove_votable_fields('coordinates')
 customSimbad.add_votable_fields(
     'ra', 'dec', 'pmra', 'pmdec', 'plx', 'rv_value', 'typed_id')
+customSimbad.TIMEOUT = ASTROQUERY_TIMEOUT_SECONDS
+
+
+def _normalize_star_name_key(star_name):
+    return f"nea_hostname_normalization:{star_name.strip().upper().replace(' ', '')}"
+
+
+def normalize_star_name(star_name):
+    """Resolve user input to a canonical NEA hostname without scanning the full catalog."""
+    normalized_input = star_name.strip()
+    if not normalized_input:
+        return star_name
+
+    cache_key = _normalize_star_name_key(normalized_input)
+    cached_hostname = cache.get(cache_key)
+    if cached_hostname is not None:
+        return cached_hostname
+
+    corrected_star_name = normalized_input.replace("'", "''")
+    try:
+        hostname_rows = NasaExoplanetArchive.query_criteria(
+            table="pscomppars",
+            select="distinct hostname",
+            where=f"hostname like '%{corrected_star_name}%'",
+            order="hostname",
+        )
+    except Exception as exc:
+        logger.debug('Hostname normalization lookup failed for %s: %s', normalized_input, exc)
+        return normalized_input
+
+    normalized_compare = normalized_input.upper().replace(' ', '')
+    for hostname in hostname_rows['hostname']:
+        if hostname.upper().replace(' ', '') == normalized_compare:
+            cache.set(cache_key, hostname, timeout=HOSTNAME_CACHE_TIMEOUT_SECONDS)
+            return hostname
+
+    cache.set(cache_key, normalized_input, timeout=HOSTNAME_CACHE_TIMEOUT_SECONDS)
+    return normalized_input
+
+
+def _retry_delay(attempt_number):
+    return EXTERNAL_RETRY_BACKOFF_SECONDS * attempt_number
+
+
+def _http_get_with_retries(url):
+    last_error = None
+    for attempt in range(1, EXTERNAL_RETRY_ATTEMPTS + 1):
+        try:
+            response = requests.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+            if response.status_code < 500 and response.status_code not in {429}:
+                return response
+            last_error = requests.exceptions.HTTPError(f'{url} returned status {response.status_code}')
+        except requests.exceptions.RequestException as exc:
+            last_error = exc
+
+        if attempt < EXTERNAL_RETRY_ATTEMPTS:
+            logger.info('Retrying external request to %s (attempt %s/%s).', url, attempt + 1, EXTERNAL_RETRY_ATTEMPTS)
+            time.sleep(_retry_delay(attempt))
+
+    raise last_error
+
+
+def _service_healthcheck_key(service_name):
+    return f'external_healthcheck:{service_name}'
+
+
+def _service_is_available(service_name, url):
+    cache_key = _service_healthcheck_key(service_name)
+    cached_result = cache.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+
+    response = _http_get_with_retries(url)
+    is_available = response.status_code == 200
+    cache.set(cache_key, is_available, timeout=EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT_SECONDS)
+    return is_available
+
+
+def _run_with_retries(func, *, retriable_exceptions, operation_name):
+    last_error = None
+    for attempt in range(1, EXTERNAL_RETRY_ATTEMPTS + 1):
+        try:
+            return func()
+        except retriable_exceptions as exc:
+            last_error = exc
+            if attempt >= EXTERNAL_RETRY_ATTEMPTS:
+                break
+            logger.info('Retrying %s (attempt %s/%s).', operation_name, attempt + 1, EXTERNAL_RETRY_ATTEMPTS)
+            time.sleep(_retry_delay(attempt))
+    raise last_error
+
+
+def _query_nea_without_logg_warning(query_func):
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            'ignore',
+            message=r"column st_logg has a unit but is kept as a MaskedColumn.*DexUnit.*",
+        )
+        return query_func()
+
+
+def _parse_stellar_logg(logg_value):
+    if ma.is_masked(logg_value):
+        return None
+
+    candidate = logg_value
+    if hasattr(candidate, 'unmasked'):
+        candidate = candidate.unmasked
+    if hasattr(candidate, 'value'):
+        candidate = candidate.value
+
+    if ma.is_masked(candidate) or candidate is None:
+        return None
+
+    return float(candidate)
 
 """——————————————————————————————PROPER MOTION OBJECT——————————————————————————————"""   
 
@@ -598,6 +726,9 @@ class StellarObject():
             No errors are raised but if an error is detected from within a catalog search, the 
             function returns the error as a string and is sent to the front end error page to be displayed.
         """
+        self._run_lookup_pipeline()
+
+    def _run_lookup_pipeline(self):
         # STEP 1: Check for search type (position or name)
         if self.position:
             # STEP Pos1: Change coordinates to ra and dec
@@ -607,17 +738,7 @@ class StellarObject():
                 self.modal_page_error_msg = exc.user_message
                 return
         elif self.star_name:
-            # STEP Name1: Check if name is in the mast target database 
-            # (used to check for case & spacing errors in user input)
-            data = NasaExoplanetArchive.query_criteria(
-                table="pscomppars", select="DISTINCT hostname")
-            host_stars = data['hostname']
-            for name in host_stars:
-                # take away all spaces and make every letter upper case
-                if self.star_name.upper().replace(' ', '') == name.upper().replace(' ', ''):
-                    # if there is a match, assign the input star name to the correct format from NEA
-                    self.star_name = name
-                    break
+            self.star_name = normalize_star_name(self.star_name)
             # STEP Name2: Get coordinate and proper motion info from Simbad
             try:
                 self.query_simbad(self.star_name)
@@ -703,15 +824,18 @@ class StellarObject():
         """
         try:
             # Check if SIMBAD is accessible
-            simbad_response = requests.get("http://simbad.cds.unistra.fr/simbad/")
-            if simbad_response.status_code != 200:
+            if not _service_is_available('simbad', "http://simbad.cds.unistra.fr/simbad/"):
                 raise CatalogLookupError(
                     'Error connecting to SIMBAD. Cannot get data to correct for proper motion. Please enter GALEX flux values manually or try again later.',
-                    log_message=f'SIMBAD health check returned status {simbad_response.status_code}',
+                    log_message='SIMBAD health check reported an unavailable service state.',
                     recoverable=True,
                 )
             
-            result_table = customSimbad.query_object(star_name)
+            result_table = _run_with_retries(
+                lambda: customSimbad.query_object(star_name),
+                retriable_exceptions=(requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError),
+                operation_name=f'SIMBAD lookup for {star_name}',
+            )
             if result_table and len(result_table) > 0:
                 data = result_table[0]
                 self.coords = (data['RA'], data['DEC'])
@@ -764,29 +888,44 @@ class StellarObject():
             Exception: If any unknown error occurs during search.
         """
         try:
-            nea_response = requests.get("https://exoplanetarchive.ipac.caltech.edu/")
-            if nea_response.status_code != 200:
+            if not _service_is_available('nea', "https://exoplanetarchive.ipac.caltech.edu/"):
                 raise CatalogLookupError(
                     'The NASA Exoplanet Archive is currently down. Please enter stellar parameters manually or try again later.',
-                    log_message=f'NEA health check returned status {nea_response.status_code}',
+                    log_message='NEA health check reported an unavailable service state.',
                     recoverable=True,
                 )
             
             if star_name:
                 corrected_star_name = star_name.replace("'", "''")
-                nea_data = NasaExoplanetArchive.query_criteria(
-                    table="pscomppars", 
-                    select="top 5 disc_refname, st_spectype, st_teff, st_logg, st_mass, st_rad, sy_dist, sy_jmag", 
-                    where=f"hostname like '%{corrected_star_name}%'", 
-                    order="hostname")
+                nea_data = _run_with_retries(
+                    lambda: _query_nea_without_logg_warning(
+                        lambda: NasaExoplanetArchive.query_criteria(
+                            table="pscomppars",
+                            select="top 5 disc_refname, st_spectype, st_teff, st_logg, st_mass, st_rad, sy_dist, sy_jmag",
+                            where=f"hostname like '%{corrected_star_name}%'",
+                            order="hostname",
+                        )
+                    ),
+                    retriable_exceptions=(requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError),
+                    operation_name=f'NEA lookup for {star_name}',
+                )
             elif coords:
-                nea_data = NasaExoplanetArchive.query_region(table="pscomppars", coordinates=SkyCoord(
-                    ra=coords[0] * u.deg, dec=coords[1] * u.deg), radius=1.0 * u.deg)
+                nea_data = _run_with_retries(
+                    lambda: _query_nea_without_logg_warning(
+                        lambda: NasaExoplanetArchive.query_region(
+                            table="pscomppars",
+                            coordinates=SkyCoord(ra=coords[0] * u.deg, dec=coords[1] * u.deg),
+                            radius=1.0 * u.deg,
+                        )
+                    ),
+                    retriable_exceptions=(requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError),
+                    operation_name=f'NEA region lookup for {coords}',
+                )
             if len(nea_data) > 0:
                 data = nea_data[0]
                 if 2400 < data['st_teff'].unmasked.value < 5500:
                     self.teff = data['st_teff'].unmasked.value
-                    self.logg = data['st_logg']
+                    self.logg = _parse_stellar_logg(data['st_logg'])
                     self.mass = data['st_mass'].unmasked.value
                     self.rad = data['st_rad'].unmasked.value
                     self.dist = data['sy_dist'].unmasked.value
@@ -847,23 +986,28 @@ class StellarObject():
         # STEP 1: Query the MAST catalogs object by GALEX catalog & given ra and dec
         try:
             # Check if SIMBAD is accessible
-            mast_response = requests.get("https://galex.stsci.edu/GR6/?page=mastform")
-            if mast_response.status_code != 200:
+            if not _service_is_available('mast', "https://galex.stsci.edu/GR6/?page=mastform"):
                 raise CatalogLookupError(
                     'Error connecting to MAST. Please enter GALEX flux values manually or try again later.',
-                    log_message=f'MAST health check returned status {mast_response.status_code}',
+                    log_message='MAST health check reported an unavailable service state.',
                     recoverable=True,
                 )
             
             galex_data = None
             if star_name and pm_corrected_coords:
                 # if the original query was by star name and the proper motion corrected coords exist
-                galex_data = Catalogs.query_object(
-                    f'{pm_corrected_coords[0]} {pm_corrected_coords[1]}', catalog="GALEX")
+                galex_data = _run_with_retries(
+                    lambda: Catalogs.query_object(f'{pm_corrected_coords[0]} {pm_corrected_coords[1]}', catalog="GALEX"),
+                    retriable_exceptions=(requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError),
+                    operation_name=f'GALEX lookup for {star_name}',
+                )
             elif position and coords:
                 # elif the original query was by position and the coords exist
-                galex_data = Catalogs.query_object(
-                    f'{coords[0]} {coords[1]}', catalog="GALEX")
+                galex_data = _run_with_retries(
+                    lambda: Catalogs.query_object(f'{coords[0]} {coords[1]}', catalog="GALEX"),
+                    retriable_exceptions=(requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError),
+                    operation_name=f'GALEX lookup for {coords}',
+                )
             # STEP 2: If there are results returned and results within 0.167 arcmins, then start processing the data.
             if galex_data is not None:
                 if len(galex_data) > 0:

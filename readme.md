@@ -65,3 +65,7 @@ If there are any questions regarding access, use, errors, or more, please email 
 - The restore script expects the archive source database to be `mydatabase`; override `MONGODB_ARCHIVE_SOURCE_DB` if your backup changes.
 - Admin data management is exposed at `/apps/pegasus/admin` and requires signing a server-issued challenge with the configured private key.
 - Flask Monitoring Dashboard is disabled by default. If you need it, enable it explicitly with the `DASHBOARD_*` environment variables instead of editing tracked config files.
+- External catalog lookups use configurable request budgets. Adjust `EXTERNAL_REQUEST_TIMEOUT`, `ASTROQUERY_TIMEOUT`, and `HOSTNAME_CACHE_TIMEOUT` in the Pegasus environment if upstream services are consistently slow.
+- Transient upstream failures are retried a small number of times. Tune `EXTERNAL_RETRY_ATTEMPTS` and `EXTERNAL_RETRY_BACKOFF_SECONDS` if a deployment needs a different retry budget.
+- Service health checks are cached briefly to avoid repeated probe requests on back-to-back searches. Tune `EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT` if you need faster freshness or lower overhead.
+- Test FITS fallbacks are disabled by default in production. Only enable `ALLOW_TEST_FITS_FALLBACK=1` when you explicitly want placeholder spectra to appear in results.

@@ -765,9 +765,10 @@ def send_email():
         return redirect(url_for('main.error', msg='Contact form unavailable at this time, please email phoenixpegasusgrid@gmail.com directly.'))
 
 
-@main.route('/error/<path:msg>')
-def error(msg):
+@main.route('/error')
+def error():
     """Custom error page."""
+    msg = request.args.get('msg', 'Something went wrong. Please try again later.')
     show_nexsci_error_msg = False
     if 'NExSci' in msg:
         show_nexsci_error_msg = True

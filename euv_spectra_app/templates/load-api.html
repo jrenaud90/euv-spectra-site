@@ -1,7 +1,171 @@
 {% extends 'base.html' %}
 {% set active_page = "none" %}
-{% block title %}API Test Route{% endblock %}
+{% block title %}PEGASUS API{% endblock %}
 {% block content %}
-    <p>API ROUTE LOADED</p>
+    <div class="row mb-5">
+        <div class="col-lg-10 offset-lg-1">
+            <h1 class="mt-4 mb-3 text-center">PEGASUS API</h1>
+            <p class="lead text-center mb-4">
+                The PEGASUS API exposes the same catalog lookup, flux-processing, and model-selection steps used by the web tool.
+            </p>
+
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    <h2 class="h4">Response format</h2>
+                    <p class="mb-2">Successful requests return HTTP 200 with the following JSON envelope:</p>
+                    <pre class="bg-light border rounded p-3"><code>{
+  "ok": true,
+  "data": { ... }
+}</code></pre>
+                    <p class="mb-2">Validation and lookup failures return structured errors with an HTTP status such as 400 or 404:</p>
+                    <pre class="bg-light border rounded p-3"><code>{
+  "ok": false,
+  "error": {
+    "code": "missing_argument",
+    "field": "name",
+    "message": "name is required."
+  }
+}</code></pre>
+                    <p class="mb-0">Numeric inputs must be parseable as floats. Coordinate lookups expect ICRS sexagesimal input, for example <code>09h14m22.00s+52d41m00.68s</code>.</p>
+                </div>
+            </div>
+
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    <h2 class="h4">Core lookup endpoints</h2>
+                    <div class="table-responsive">
+                        <table class="table align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Endpoint</th>
+                                    <th>Required query parameters</th>
+                                    <th>Returns</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>/api/get_parameters_by_name</code></td>
+                                    <td><code>name</code></td>
+                                    <td>Stellar parameters, coordinates, proper motion data, and GALEX fluxes.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/get_parameters_by_position</code></td>
+                                    <td><code>position</code></td>
+                                    <td>Same payload as the name lookup, seeded from coordinates instead of a target name.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/get_galex_obs_time</code></td>
+                                    <td><code>star_name</code></td>
+                                    <td>The earliest matching GALEX observation time.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    <h2 class="h4">Flux-processing endpoints</h2>
+                    <div class="table-responsive">
+                        <table class="table align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Endpoint</th>
+                                    <th>Required query parameters</th>
+                                    <th>Returns</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>/api/convert_microjanskies_to_flux</code></td>
+                                    <td>At least one of <code>fuv</code> or <code>nuv</code></td>
+                                    <td>Converted GALEX flux densities and propagated errors when <code>*_err</code> values are supplied.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/scale_galex_flux</code></td>
+                                    <td><code>dist</code>, <code>rad</code></td>
+                                    <td>Surface scaling factor plus any supplied FUV/NUV values scaled to the stellar surface.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/get_matching_photosphere_model</code></td>
+                                    <td><code>teff</code>, <code>logg</code>, <code>mass</code></td>
+                                    <td>The nearest photosphere model metadata.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/subtract_photospheric_flux</code></td>
+                                    <td>At least one matching pair of <code>fuv</code>/<code>photo_fuv</code> or <code>nuv</code>/<code>photo_nuv</code></td>
+                                    <td>Photosphere-subtracted fluxes and propagated errors.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/convert_scale_photosphere_subtract_galex_fluxes</code></td>
+                                    <td><code>teff</code>, <code>logg</code>, <code>mass</code>, <code>dist</code>, <code>rad</code>, and at least one of <code>fuv</code> or <code>nuv</code></td>
+                                    <td>Combined photosphere lookup, scaling, and processed GALEX fluxes.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    <h2 class="h4">Model-selection endpoints</h2>
+                    <div class="table-responsive">
+                        <table class="table align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Endpoint</th>
+                                    <th>Required query parameters</th>
+                                    <th>Returns</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td><code>/api/get_matching_subtype</code></td>
+                                    <td><code>teff</code>, <code>logg</code>, <code>mass</code></td>
+                                    <td>The closest PEGASUS subtype for the stellar parameters.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/get_models_in_limits</code></td>
+                                    <td><code>subtype</code>, <code>fuv</code>, <code>fuv_err</code>, <code>nuv</code>, <code>nuv_err</code></td>
+                                    <td>Models whose fluxes fall within the provided GALEX error bounds.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/get_models_by_chi_squared</code></td>
+                                    <td><code>subtype</code>, <code>fuv</code>, <code>nuv</code></td>
+                                    <td>Models sorted by chi-squared distance from the supplied fluxes.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/get_models_by_weighted_fuv</code></td>
+                                    <td><code>subtype</code>, <code>fuv</code>, <code>nuv</code></td>
+                                    <td>Models ranked similarly to chi-squared search with stronger FUV weighting.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/get_models_by_flux_ratio</code></td>
+                                    <td><code>subtype</code>, <code>fuv</code>, <code>nuv</code></td>
+                                    <td>Models ranked by the agreement between observed and model FUV/NUV ratios.</td>
+                                </tr>
+                                <tr>
+                                    <td><code>/api/get_model_data</code></td>
+                                    <td><code>fits_filename</code></td>
+                                    <td>Wavelength and flux arrays from an available FITS file.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card shadow-sm mb-5">
+                <div class="card-body">
+                    <h2 class="h4">Example requests</h2>
+                    <pre class="bg-light border rounded p-3 mb-3"><code>GET /apps/pegasus/api/get_parameters_by_name?name=GJ%20338%20B</code></pre>
+                    <pre class="bg-light border rounded p-3 mb-3"><code>GET /apps/pegasus/api/convert_scale_photosphere_subtract_galex_fluxes?fuv=55.76&amp;fuv_err=8.7&amp;nuv=1002.16&amp;nuv_err=14.88&amp;dist=6.33256&amp;rad=0.58&amp;teff=4014.0&amp;logg=4.68&amp;mass=0.64</code></pre>
+                    <pre class="bg-light border rounded p-3 mb-0"><code>GET /apps/pegasus/api/get_models_by_chi_squared?subtype=M0&amp;fuv=167.64971644316745&amp;nuv=1219.2948859922221</code></pre>
+                </div>
+            </div>
+        </div>
+    </div>
     {% block contact_form %}{% endblock %}
 {% endblock %}

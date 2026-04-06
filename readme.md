@@ -58,6 +58,29 @@ And I wish to thank my mentor, the lead in the PEGASUS project, Dr. Sarah Peacoc
 ### Contacts
 If there are any questions regarding access, use, errors, or more, please email me at maliabarker[at]icloud.com
 
+## API notes
+
+- The interactive API page is available at `/apps/pegasus/api/` in a running deployment.
+- API responses now use a consistent JSON envelope. Successful requests return `{"ok": true, "data": ...}` and validation or lookup failures return `{"ok": false, "error": {...}}` with an HTTP status such as 400 or 404.
+- Route arguments are validated centrally. Numeric fields must parse as floats, required text fields must be present and non-blank, and coordinate lookups expect ICRS sexagesimal strings such as `09h14m22.00s+52d41m00.68s`.
+- Core lookup endpoints:
+    - `/api/get_parameters_by_name?name=...`
+    - `/api/get_parameters_by_position?position=...`
+    - `/api/get_galex_obs_time?star_name=...`
+- Flux-processing endpoints:
+    - `/api/convert_microjanskies_to_flux`
+    - `/api/scale_galex_flux`
+    - `/api/get_matching_photosphere_model`
+    - `/api/subtract_photospheric_flux`
+    - `/api/convert_scale_photosphere_subtract_galex_fluxes`
+- Model-selection endpoints:
+    - `/api/get_matching_subtype`
+    - `/api/get_models_in_limits`
+    - `/api/get_models_by_chi_squared`
+    - `/api/get_models_by_weighted_fuv`
+    - `/api/get_models_by_flux_ratio`
+    - `/api/get_model_data`
+
 ## Local deployment notes
 
 - Copy `apps/pegasus/.env.example` to `apps/pegasus/.env` and fill in the Flask, mail, Mongo, and admin-key settings.
@@ -68,4 +91,99 @@ If there are any questions regarding access, use, errors, or more, please email 
 - External catalog lookups use configurable request budgets. Adjust `EXTERNAL_REQUEST_TIMEOUT`, `ASTROQUERY_TIMEOUT`, and `HOSTNAME_CACHE_TIMEOUT` in the Pegasus environment if upstream services are consistently slow.
 - Transient upstream failures are retried a small number of times. Tune `EXTERNAL_RETRY_ATTEMPTS` and `EXTERNAL_RETRY_BACKOFF_SECONDS` if a deployment needs a different retry budget.
 - Service health checks are cached briefly to avoid repeated probe requests on back-to-back searches. Tune `EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT` if you need faster freshness or lower overhead.
-- Test FITS fallbacks are disabled by default in production. Only enable `ALLOW_TEST_FITS_FALLBACK=1` when you explicitly want placeholder spectra to appear in results.
+- Test FITS fallbacks are disabled by default in code. Enable `ALLOW_TEST_FITS_FALLBACK=1` in the deployment environment only if you intentionally want placeholder spectra to appear in results.
+
+## Running tests
+
+- Run Pegasus tests inside the container, not the host Python environment. The host machine may not have the Flask and astronomy dependencies installed.
+- Rebuild Pegasus before running tests if you changed Python files or added new test files:
+
+```bash
+cd /home/ubuntu/EMAC-Apps/apps
+sudo docker compose up -d --build pegasus
+```
+
+- Run the current targeted regression suite:
+
+```bash
+cd /home/ubuntu/EMAC-Apps/apps
+sudo docker compose exec -T pegasus sh -lc 'cd /app && \
+PYTHONPATH=/app python tests/test_flux_utils.py && \
+PYTHONPATH=/app python tests/test_helpers_dbqueries.py && \
+PYTHONPATH=/app python tests/test_main_routes.py && \
+PYTHONPATH=/app python tests/test_admin_routes.py && \
+PYTHONPATH=/app python tests/test_smoke_search_workflow.py && \
+PYTHONPATH=/app python tests/test_external_lookup_handling.py'
+```
+
+- Run a single test file the same way:
+
+```bash
+cd /home/ubuntu/EMAC-Apps/apps
+sudo docker compose exec -T pegasus sh -lc 'cd /app && PYTHONPATH=/app python tests/test_main_routes.py'
+```
+
+- If a test file was just added and the container cannot find it, rebuild Pegasus again before rerunning the command.
+
+## Following live logs
+
+- Follow Pegasus application logs while the site is live:
+
+```bash
+cd /home/ubuntu/EMAC-Apps/apps
+sudo docker compose logs -f pegasus
+```
+
+- Follow nginx logs as well if you need to distinguish application errors from proxy errors such as `502 Bad Gateway`:
+
+```bash
+cd /home/ubuntu/EMAC-Apps/apps
+sudo docker compose logs -f nginx pegasus
+```
+
+- Follow MongoDB logs when debugging data restore, collection availability, or connection/authentication issues:
+
+```bash
+cd /home/ubuntu/EMAC-Apps/apps
+sudo docker compose logs -f pegasus_mongodb
+```
+
+- For a shorter live view, tail the most recent lines and then continue following:
+
+```bash
+cd /home/ubuntu/EMAC-Apps/apps
+sudo docker compose logs --tail=100 -f pegasus
+```
+
+## Accessing the admin portal
+
+- The admin portal is exposed at `/apps/pegasus/admin`.
+- The login page is at `/apps/pegasus/admin/login`.
+- The admin UI allows authenticated users to load JSON or NDJSON documents into allowed MongoDB collections and delete documents or whole collection contents.
+
+### Required configuration
+
+- Set `ADMIN_PUBLIC_KEY_PATH` or `ADMIN_PUBLIC_KEY` in `apps/pegasus/.env` so Pegasus can verify login signatures.
+- Confirm `ADMIN_ALLOWED_COLLECTIONS` includes only the MongoDB collections you want exposed in the UI.
+- Rebuild or restart Pegasus after changing admin-related environment variables:
+
+```bash
+cd /home/ubuntu/EMAC-Apps/apps
+sudo docker compose up -d --build pegasus
+```
+
+### Login flow
+
+- Open `/apps/pegasus/admin/login` in the browser.
+- Copy the one-time challenge string shown on the page.
+- Sign that challenge with the private key that matches the configured public key.
+- Base64-encode the signature and paste it into the `Base64 Signature` field.
+- Submit the form to start an authenticated admin session.
+
+### Access notes
+
+- If admin authentication is not configured, Pegasus redirects away from the admin page and shows an error instead of exposing MongoDB controls.
+- Admin sessions expire automatically based on `ADMIN_SESSION_MINUTES`.
+- Replacing a collection requires typing `REPLACE` exactly.
+- Deleting an entire collection requires typing the collection name exactly.
+- The portal is intended for operators on the deployment host or trusted network path behind the existing site authentication and infrastructure controls.

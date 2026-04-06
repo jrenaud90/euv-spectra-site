@@ -7,6 +7,7 @@ import time
 import warnings
 from astropy.time import Time
 import astropy.units as u
+from astropy.utils.exceptions import AstropyUserWarning
 from astroquery.exceptions import ResolverError
 from astropy.coordinates import SkyCoord, Distance
 from astroquery.mast import Catalogs
@@ -15,6 +16,7 @@ from astroquery.simbad import Simbad
 from pymongo.errors import PyMongoError
 from euv_spectra_app.errors import CatalogLookupError, DataProcessingError, ModelSelectionError
 from euv_spectra_app.extensions import app, cache, db
+from euv_spectra_app.flux_utils import FLUX_WAVELENGTHS, calculate_surface_scale, convert_microjanskies_to_flux_density, process_galex_flux, process_galex_flux_with_error, subtract_photospheric_flux
 from euv_spectra_app.helpers_dbqueries import get_matching_subtype, get_matching_photosphere, search_db, get_models_with_chi_squared, get_models_with_weighted_fuv, get_flux_ratios
 
 
@@ -129,10 +131,7 @@ def _run_with_retries(func, *, retriable_exceptions, operation_name):
 
 def _query_nea_without_logg_warning(query_func):
     with warnings.catch_warnings():
-        warnings.filterwarnings(
-            'ignore',
-            message=r"column st_logg has a unit but is kept as a MaskedColumn.*DexUnit.*",
-        )
+        warnings.simplefilter('ignore', AstropyUserWarning)
         return query_func()
 
 
@@ -574,13 +573,11 @@ class GalexFluxes():
 
     def convert_ujy_to_flux_density(self, num, wv):
         """Converts microjanskies to ergs/s/cm2/A."""
-        return (((3e-5) * (num * 10**-6)) / pow(wv, 2))
+        return convert_microjanskies_to_flux_density(num, wv)
 
     def scale_flux(self, num):
         """Scales flux to stellar surface."""
-        scale = (((self.stellar_obj['dist'] * 3.08567758e18)
-                 ** 2) / ((self.stellar_obj['rad'] * 6.9e10)**2))
-        return num * scale
+        return num * calculate_surface_scale(self.stellar_obj['dist'], self.stellar_obj['rad'])
 
     def get_photosphere_model(self):
         """Returns a PEGASUS photosphere model for photosphere subtraction."""
@@ -594,7 +591,7 @@ class GalexFluxes():
 
     def subtract_photosphere_flux(self, chosen_flux, photo_flux):
         """Subtracts the photospheric contributed flux from GALEX flux."""
-        return chosen_flux - photo_flux
+        return subtract_photospheric_flux(chosen_flux, photo_flux)
     
     def convert_scale_photosphere_subtract_single_flux(self, flux, flux_type):
         """Runs all calculations to process a GALEX flux to prepare for searching PEGASUS grid.
@@ -613,23 +610,18 @@ class GalexFluxes():
             The final processed flux.
         # TODO Add type error catch
         """
-        wv = None
-        photo_flux = None
         photosphere_data = self.get_photosphere_model()
         if not isinstance(photosphere_data, dict):
             raise ValueError('Unable to retrieve photosphere model data from database.')
-        if flux_type == 'fuv':
-            wv = 1542.3
-            photo_flux = photosphere_data['fuv']
-        elif flux_type == 'nuv':
-            wv = 2274.4
-            photo_flux = photosphere_data['nuv']
-        else:
+        if flux_type not in FLUX_WAVELENGTHS:
             raise DataProcessingError('Can only process FUV or NUV flux values.')
-        converted_flux = self.convert_ujy_to_flux_density(flux, wv)
-        scaled_flux = self.scale_flux(converted_flux)
-        photosub_flux = self.subtract_photosphere_flux(scaled_flux, photo_flux)
-        return photosub_flux
+        return process_galex_flux(
+            flux,
+            photosphere_data[flux_type],
+            self.stellar_obj['dist'],
+            self.stellar_obj['rad'],
+            FLUX_WAVELENGTHS[flux_type],
+        )
 
     def convert_scale_photosphere_subtract_fluxes(self):
         """Runs all processing needed to search PEGASUS grid for each valid GALEX flux.
@@ -640,27 +632,37 @@ class GalexFluxes():
             3. Finds a matching photosphere model with the given stellar parameters and subtracts 
                 photospheric flux contribution.
         """
+        photosphere_data = self.get_photosphere_model()
+        if not isinstance(photosphere_data, dict):
+            raise ValueError('Unable to retrieve photosphere model data from database.')
+
         for key, val in dict(vars(self)).items():
             processed_flux_name = f'processed_{key}'
             if ('fuv' in key or 'nuv' in key) and 'err' not in key and 'is' not in key and val is not None:
-                if 'fuv' in key:
-                    processed_flux = self.convert_scale_photosphere_subtract_single_flux(val, 'fuv')
-                elif 'nuv' in key:
-                    processed_flux = self.convert_scale_photosphere_subtract_single_flux(val, 'nuv')
+                flux_type = 'fuv' if 'fuv' in key else 'nuv'
+                processed_flux = process_galex_flux(
+                    val,
+                    photosphere_data[flux_type],
+                    self.stellar_obj['dist'],
+                    self.stellar_obj['rad'],
+                    FLUX_WAVELENGTHS[flux_type],
+                )
                 setattr(self, processed_flux_name, processed_flux)
             elif (key == 'fuv_err' or key == 'nuv_err') and val is not None:
                 # get the attribute value with the name of which flux
                 which_flux = key[:3]
                 flux = getattr(self, which_flux)
-                processed_flux = getattr(self, f'processed_{which_flux}')
-                upper_lim = flux + val
-                lower_lim = flux - val
-                photosub_upper_lim = self.convert_scale_photosphere_subtract_single_flux(upper_lim, which_flux)
-                photosub_lower_lim = self.convert_scale_photosphere_subtract_single_flux(lower_lim, which_flux)
-                new_upper_err = photosub_upper_lim - processed_flux
-                new_lower_err = processed_flux - photosub_lower_lim
-                avg_err = (new_upper_err + new_lower_err) / 2
-                setattr(self, processed_flux_name, avg_err)
+                if flux is None:
+                    continue
+                _, processed_err = process_galex_flux_with_error(
+                    flux,
+                    val,
+                    photosphere_data[which_flux],
+                    self.stellar_obj['dist'],
+                    self.stellar_obj['rad'],
+                    FLUX_WAVELENGTHS[which_flux],
+                )
+                setattr(self, processed_flux_name, processed_err)
 
 """——————————————————————————————STELLAR OBJECT——————————————————————————————"""
 

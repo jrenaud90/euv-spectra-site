@@ -1,14 +1,15 @@
-# initializing main and database
-from flask import Flask
-from euv_spectra_app.config import Config
-from flask_session import Session
-import os
+"""Compatibility exports for the Pegasus application package.
 
-app = Flask(__name__)
-app.config.from_object(Config)
-app.secret_key = os.urandom(24)
+The runtime Flask app is defined in euv_spectra_app.extensions. Keeping the package
+root side-effect free avoids constructing a second Flask app during import.
+"""
 
-Session(app)
+__all__ = ["app", "cache", "client", "db", "mail", "session_manager"]
 
-from euv_spectra_app.main.routes import main
-app.register_blueprint(main)
+
+def __getattr__(name):
+	if name in __all__:
+		from euv_spectra_app import extensions
+
+		return getattr(extensions, name)
+	raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

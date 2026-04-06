@@ -1,6 +1,7 @@
 from flask import Flask
 from flask_mail import Mail
 from flask_caching import Cache
+from flask_session import Session
 from pymongo import MongoClient
 from os import environ
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -10,15 +11,17 @@ from flask_monitoringdashboard.database import session_scope
 from flask_monitoringdashboard.database import Base, engine
 
 cache = Cache()
+session_manager = Session()
 
 app = Flask(__name__)
 app.config.from_object(Config)
-app.secret_key = environ.get('SECRET_KEY')
+app.secret_key = app.config.get('SECRET_KEY')
 
 app.config['APPLICATION_ROOT'] = environ.get('APPLICATION_ROOT', '/apps/pegasus')
 app.config['PREFERRED_URL_SCHEME'] = environ.get('PREFERRED_URL_SCHEME', 'https')
 
 cache.init_app(app)
+session_manager.init_app(app)
 mail = Mail(app)
 app.jinja_env.filters['zip'] = zip
 

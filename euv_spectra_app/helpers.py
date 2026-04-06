@@ -5,6 +5,18 @@ from euv_spectra_app.extensions import *
 from euv_spectra_app.models import StellarObject, ProperMotionData, GalexFluxes
 
 
+def build_flux_context(stellar_object):
+    """Keep only the stellar fields needed by flux processing across requests."""
+    return {
+        'teff': getattr(stellar_object, 'teff', None),
+        'logg': getattr(stellar_object, 'logg', None),
+        'mass': getattr(stellar_object, 'mass', None),
+        'dist': getattr(stellar_object, 'dist', None),
+        'rad': getattr(stellar_object, 'rad', None),
+        'stellar_subtype': getattr(stellar_object, 'stellar_subtype', None),
+    }
+
+
 def remove_objs_from_obj_dict(obj_dict):
             del obj_dict['fluxes']
             del obj_dict['pm_data']
@@ -49,6 +61,19 @@ def to_json(obj):
     raise TypeError(f'Object of type {type(obj)} is not JSON serializable')
 
 
+def serialize_stellar_object(stellar_object):
+    payload = to_json(stellar_object)
+    payload.pop('modal_error_msgs', None)
+    payload.pop('modal_page_error_msg', None)
+
+    fluxes = payload.get('fluxes')
+    if isinstance(fluxes, dict):
+        # The top-level stellar fields are enough to reconstruct the flux context later.
+        fluxes.pop('stellar_obj', None)
+
+    return json.dumps(payload)
+
+
 def from_json(json_str):
     # Deserialize the JSON formatted string back into an object
     if json_str is not None:
@@ -72,6 +97,13 @@ def from_json(json_str):
     else:
         # if there is no json string, that means the session timed out, return an empty stellar object
         return StellarObject()
+
+
+def deserialize_stellar_object(json_str):
+    stellar_object = from_json(json_str)
+    if hasattr(stellar_object, 'fluxes') and stellar_object.fluxes is not None:
+        stellar_object.fluxes.stellar_obj = build_flux_context(stellar_object)
+    return stellar_object
 
 
 def create_plotly_graph(files):

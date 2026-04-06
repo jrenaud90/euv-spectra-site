@@ -12,8 +12,11 @@ from euv_spectra_app.admin_utils import admin_auth_configured, admin_required, c
 from euv_spectra_app.extensions import *
 from euv_spectra_app.main.forms import AdminDeleteForm, AdminSignatureForm, AdminUploadForm, ManualForm, StarNameForm, PositionForm, ModalForm, ContactForm
 from euv_spectra_app.models import StellarObject, PegasusGrid
-from euv_spectra_app.helpers import insert_data_into_form, to_json, from_json, create_plotly_graph, remove_objs_from_obj_dict
+from euv_spectra_app.helpers import build_flux_context, create_plotly_graph, deserialize_stellar_object, from_json, insert_data_into_form, remove_objs_from_obj_dict, serialize_stellar_object, to_json
 main = Blueprint("main", __name__)
+
+
+STELLAR_OBJECT_SESSION_KEY = 'stellar_object'
 
 @main.context_processor
 def inject_form():
@@ -67,7 +70,7 @@ def homepage():
         insert_data_into_form(stellar_object, modal_form)
 
         # store the object as a json variable for persistence
-        session['stellar_object'] = json.dumps(to_json(stellar_object))
+        session[STELLAR_OBJECT_SESSION_KEY] = serialize_stellar_object(stellar_object)
         session['modal_show'] = True
         return render_template('home.html', manual_form=manual_form, name_form=name_form, position_form=position_form, modal_form=modal_form, stellar_obj=stellar_object)
 
@@ -84,9 +87,12 @@ def submit_modal_form():
     modal_form = ModalForm()
 
     # Retrieve the JSON formatted string from the session
-    target_json = session.get('stellar_object')
+    target_json = session.get(STELLAR_OBJECT_SESSION_KEY)
+    if target_json is None:
+        flash('Your session expired. Please restart the search.', 'warning')
+        return redirect(url_for('main.homepage'))
     # Deserialize the JSON formatted string back into an object
-    stellar_object = from_json(target_json)
+    stellar_object = deserialize_stellar_object(target_json)
     # Populate the modal form with data from object
     insert_data_into_form(stellar_object, modal_form)
     modal_form.populate_obj(request.form)
@@ -111,7 +117,7 @@ def submit_modal_form():
                                 setattr(stellar_object.fluxes, unmanual_field, float(field.data))
                         else:
                             setattr(stellar_object, unmanual_field, float(field.data))
-            session['stellar_object'] = json.dumps(to_json(stellar_object))
+            session[STELLAR_OBJECT_SESSION_KEY] = serialize_stellar_object(stellar_object)
             return redirect(url_for('main.return_results'))
     return render_template('home.html', manual_form=manual_form, name_form=name_form, position_form=position_form, modal_form=modal_form, stellar_obj=stellar_object)
 
@@ -220,8 +226,7 @@ def submit_manual_form():
         stellar_object.get_stellar_subtype(
             stellar_object.teff, stellar_object.logg, stellar_object.mass)
         # remove any objects within the stellar object and assign it to fluxes
-        stellar_object.fluxes.stellar_obj = remove_objs_from_obj_dict(
-            stellar_object.__dict__.copy())
+        stellar_object.fluxes.stellar_obj = build_flux_context(stellar_object)
         # run the check null, saturated, and upper limits fluxes
         stellar_object.fluxes.check_null_fluxes()
         stellar_object.fluxes.check_saturated_fluxes()
@@ -230,7 +235,7 @@ def submit_manual_form():
         print(vars(stellar_object))
         print(vars(stellar_object.fluxes))
         # store stellar object is session as json
-        session['stellar_object'] = json.dumps(to_json(stellar_object))
+        session[STELLAR_OBJECT_SESSION_KEY] = serialize_stellar_object(stellar_object)
         return redirect(url_for('main.return_results'))
     else:
         flash('Whoops, something went wrong. Please check your inputs and try again!', 'danger')
@@ -249,9 +254,12 @@ def return_results():
 
     # For populating modal form with stellar object data if user wants to edit parameters
     # Retrieve the JSON formatted string from the session
-    target_json = session.get('stellar_object')
+    target_json = session.get(STELLAR_OBJECT_SESSION_KEY)
+    if target_json is None:
+        flash('Your session expired. Please restart the search.', 'warning')
+        return redirect(url_for('main.homepage'))
     # Deserialize the JSON formatted string back into an object
-    stellar_object = from_json(target_json)
+    stellar_object = deserialize_stellar_object(target_json)
     print('STELLAR OBJ RETURN', vars(stellar_object),
           vars(stellar_object.fluxes))
     # Populate the modal form with data from object
@@ -538,7 +546,6 @@ def return_results():
         # STEP 13: If using test data, add flash so user knows that test data is being used
         if using_test_data == True:
             flash('EUV data not available yet, using test data for viewing purposes. Please contact us for more information.', 'danger')
-        session['stellar_target'] = json.dumps(to_json(stellar_object))
         return render_template('result.html', modal_form=modal_form, name_form=name_form, position_form=position_form, graphJSON=graphJSON, stellar_obj=stellar_object, matching_models=return_models, test_filepaths=test_filepath_names)
     else:
         flash('Missing required stellar parameters. Submit the required data to view this page.', 'danger')
@@ -553,9 +560,10 @@ def check_directory(filename):
             current_app.root_path, app.config['FITS_FOLDER'], 'test')
     else:
         # Retrieve the JSON formatted string from the session
-        target_json = session.get('stellar_target')
-        # Deserialize the JSON formatted string back into an object
-        stellar_target = from_json(target_json)
+        target_json = session.get(STELLAR_OBJECT_SESSION_KEY)
+        if target_json is None:
+            return jsonify({'exists': False})
+        stellar_target = deserialize_stellar_object(target_json)
         downloads = os.path.join(
             current_app.root_path, app.config['FITS_FOLDER'], stellar_target.model_subtype)
     if os.path.exists(os.path.join(downloads, filename)):
@@ -572,9 +580,11 @@ def download(filename, model):
             current_app.root_path, app.config['FITS_FOLDER'], 'test')
     else:
         # Retrieve the JSON formatted string from the session
-        target_json = session.get('stellar_target')
-        # Deserialize the JSON formatted string back into an object
-        stellar_target = from_json(target_json)
+        target_json = session.get(STELLAR_OBJECT_SESSION_KEY)
+        if target_json is None:
+            flash('Your session expired. Please rerun the search before downloading files.', 'warning')
+            return redirect(url_for('main.homepage'))
+        stellar_target = deserialize_stellar_object(target_json)
         downloads = os.path.join(
             current_app.root_path, app.config['FITS_FOLDER'], stellar_target.model_subtype)
     file_path = os.path.join(downloads, filename)

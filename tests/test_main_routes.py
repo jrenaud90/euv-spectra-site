@@ -101,21 +101,21 @@ class MainRoutesTestCase(unittest.TestCase):
         self.assertIn('/apps/pegasus/error?', response.location)
         self.assertIn('Synthetic+processing+failure+for+test+coverage.', response.location)
 
-    @patch('euv_spectra_app.main.routes.os.path.exists', return_value=True)
     @patch('euv_spectra_app.main.routes.create_plotly_graph', return_value={'data': [], 'layout': {}})
     @patch('euv_spectra_app.main.routes.render_template')
     @patch('euv_spectra_app.main.routes.insert_data_into_form')
     @patch('euv_spectra_app.main.routes.deserialize_stellar_object')
+    @patch('euv_spectra_app.main.routes.get_model_fits_bytes', return_value=b'fits-bytes')
     @patch('euv_spectra_app.main.routes.PegasusGrid', FakePegasusGrid)
     @patch('euv_spectra_app.main.routes.db.list_collection_names', return_value=['m0_grid'])
     def test_results_renders_result_template_for_mocked_session(
         self,
         mock_list_collection_names,
+        mock_get_model_fits_bytes,
         mock_deserialize,
         mock_insert,
         mock_render_template,
         mock_create_plot,
-        mock_exists,
     ):
         self._store_session_object()
         mock_insert.return_value = None
@@ -128,7 +128,26 @@ class MainRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.get_data(as_text=True), 'result.html|1')
         mock_list_collection_names.assert_called_once()
         mock_create_plot.assert_called_once()
-        self.assertTrue(mock_exists.called)
+        mock_get_model_fits_bytes.assert_called()
+
+    @patch('euv_spectra_app.main.routes.fits_asset_exists', return_value=True)
+    def test_check_directory_uses_filename_inference_without_session(self, mock_fits_asset_exists):
+        response = self.client.get('/check-directory/PEGASUS.M0.synthetic.fits')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {'exists': True})
+        mock_fits_asset_exists.assert_called_once_with('M0', 'PEGASUS.M0.synthetic.fits')
+
+    @patch('euv_spectra_app.main.routes.send_file')
+    @patch('euv_spectra_app.main.routes.get_model_fits_bytes', return_value=b'fits-bytes')
+    def test_download_uses_filename_inference_without_session(self, mock_get_model_fits_bytes, mock_send_file):
+        mock_send_file.return_value = flask_app.response_class('ok', mimetype='text/plain')
+
+        response = self.client.get('/download/PEGASUS.M0.synthetic.fits/Model%201')
+
+        self.assertEqual(response.status_code, 200)
+        mock_get_model_fits_bytes.assert_called_once_with('M0', 'PEGASUS.M0.synthetic.fits')
+        mock_send_file.assert_called_once()
 
 
 if __name__ == '__main__':

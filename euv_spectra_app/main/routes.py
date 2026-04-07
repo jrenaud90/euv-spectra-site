@@ -13,6 +13,7 @@ from datetime import timedelta
 from euv_spectra_app.admin_utils import admin_auth_configured, admin_required, clear_admin_session, get_allowed_collection_names, get_collection_summaries, is_admin_authenticated, issue_admin_challenge, mark_admin_authenticated, parse_json_document, parse_uploaded_documents, verify_admin_signature
 from euv_spectra_app.errors import PegasusError
 from euv_spectra_app.extensions import *
+from euv_spectra_app.fits_storage import fits_asset_exists, get_model_fits_bytes, get_test_fits_bytes, infer_model_subtype_from_filename, is_test_fits_filename
 from euv_spectra_app.main.forms import AdminDeleteForm, AdminSignatureForm, AdminUploadForm, ManualForm, StarNameForm, PositionForm, ModalForm, ContactForm
 from euv_spectra_app.models import StellarObject, PegasusGrid
 from euv_spectra_app.helpers import build_flux_context, create_plotly_graph, deserialize_stellar_object, from_json, insert_data_into_form, remove_objs_from_obj_dict, serialize_stellar_object, to_json
@@ -519,29 +520,24 @@ def return_results():
                 # If there are both saturated and upper limit fluxes, add saturated and upper limit option A flag
             # STEP 11.1: Iterate over each model returned and add data and flag (if applicable)
             for doc in models:
-                # for each matching model that comes back, get the filepath so we can check if it exists later
-                filepath = os.path.abspath(
-                    f"euv_spectra_app/fits_files/{stellar_object.model_subtype}/{doc['fits_filename']}")
-                selected_filepath = None
+                selected_fits_bytes = get_model_fits_bytes(stellar_object.model_subtype, doc['fits_filename'])
                 key = f'model_{model_index}'
                 plot_data[key] = {'index': model_index, # Add index for num tracking on return page
                                   'nuv': doc['nuv'], # Add NUV flux
                                   'fuv': doc['fuv'], # Add FUV flux
                                   'euv': doc['euv']} # Add EUV flux
                 model_index += 1 # After adding the model, increment the index
-                # Check if the model's filepath exists. Test fallback is opt-in only.
-                if os.path.exists(filepath):
-                    selected_filepath = filepath
-                elif allow_test_fits_fallback:
+                # Check if the model's FITS data exists. Test fallback is opt-in only.
+                if selected_fits_bytes is None and allow_test_fits_fallback:
                     '''——————FOR TESTING PURPOSES (if FITS file is not yet available)—————'''
-                    selected_filepath = test_filepaths[model_index-1]
+                    selected_fits_bytes = get_test_fits_bytes(test_filepath_names[model_index-1])
                     using_test_data = True
-                else:
+                if selected_fits_bytes is None:
                     plot_data.pop(key, None)
-                    current_app.logger.warning('Skipping PEGASUS model %s because FITS file %s is unavailable.', doc.get('fits_filename'), filepath)
+                    current_app.logger.warning('Skipping PEGASUS model %s because FITS data is unavailable.', doc.get('fits_filename'))
                     continue
 
-                plot_data[key]['filepath'] = selected_filepath
+                plot_data[key]['fits_bytes'] = selected_fits_bytes
                 return_models.append(doc)
                 # Now add the flag if there is one.
                 if (stellar_object.fluxes.fuv_is_saturated or stellar_object.fluxes.nuv_is_saturated) and (stellar_object.fluxes.fuv_is_upper_limit or stellar_object.fluxes.nuv_is_upper_limit):
@@ -581,46 +577,29 @@ def return_results():
 @main.route('/check-directory/<filename>')
 def check_directory(filename):
     """Checks if a FITS file exists."""
-    if 'test' in filename:
-        downloads = os.path.join(
-            current_app.root_path, app.config['FITS_FOLDER'], 'test')
-    else:
-        # Retrieve the JSON formatted string from the session
-        target_json = session.get(STELLAR_OBJECT_SESSION_KEY)
-        if target_json is None:
-            return jsonify({'exists': False})
-        stellar_target = deserialize_stellar_object(target_json)
-        downloads = os.path.join(
-            current_app.root_path, app.config['FITS_FOLDER'], stellar_target.model_subtype)
-    if os.path.exists(os.path.join(downloads, filename)):
-        return jsonify({'exists': True})
-    else:
-        return jsonify({'exists': False})
+    if is_test_fits_filename(filename):
+        return jsonify({'exists': fits_asset_exists(None, filename)})
+
+    model_subtype = infer_model_subtype_from_filename(filename)
+    return jsonify({'exists': fits_asset_exists(model_subtype, filename)})
 
 
 @main.route('/download/<filename>/<model>', methods=['GET', 'POST'])
 def download(filename, model):
     """Downloading FITS file on button click."""
-    if 'test' in filename:
-        downloads = os.path.join(
-            current_app.root_path, app.config['FITS_FOLDER'], 'test')
+    if is_test_fits_filename(filename):
+        file_bytes = get_test_fits_bytes(filename)
     else:
-        # Retrieve the JSON formatted string from the session
-        target_json = session.get(STELLAR_OBJECT_SESSION_KEY)
-        if target_json is None:
-            flash('Your session expired. Please rerun the search before downloading files.', 'warning')
-            return redirect(url_for('main.homepage'))
-        stellar_target = deserialize_stellar_object(target_json)
-        downloads = os.path.join(
-            current_app.root_path, app.config['FITS_FOLDER'], stellar_target.model_subtype)
-    file_path = os.path.join(downloads, filename)
-    if not os.path.exists(file_path):
+        model_subtype = infer_model_subtype_from_filename(filename)
+        file_bytes = get_model_fits_bytes(model_subtype, filename)
+    if file_bytes is None:
         flash('File is not available to download because it does not exist yet!', 'danger')
+        return redirect(url_for('main.return_results'))
     # Create the zip file in memory
     memory_file = io.BytesIO()
     with zipfile.ZipFile(memory_file, 'w') as zipf:
         # Add the requested file to the zip
-        zipf.write(file_path, filename)
+        zipf.writestr(filename, file_bytes)
         # Add the README file to the zip
         readme_path = os.path.join(
             current_app.root_path, app.config['FITS_FOLDER'], 'README.md')

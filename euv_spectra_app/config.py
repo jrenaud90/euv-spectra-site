@@ -42,6 +42,10 @@ class Config(object):
         "MONGODB_ARCHIVE_DOWNLOAD_PATH",
         "/run/secrets/pegasus_mongo_backup.archive",
     )
+    FITS_STORAGE_BACKEND = os.getenv("FITS_STORAGE_BACKEND", "local").strip().lower()
+    FITS_S3_BUCKET = os.getenv("FITS_S3_BUCKET")
+    FITS_S3_PREFIX = os.getenv("FITS_S3_PREFIX", "").strip("/")
+    FITS_S3_REGION = os.getenv("FITS_S3_REGION") or os.getenv("AWS_REGION")
 
     # for flask sessions
     SESSION_PERMANENT = False

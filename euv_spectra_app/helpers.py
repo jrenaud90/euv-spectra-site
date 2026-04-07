@@ -1,5 +1,6 @@
 import json
 import logging
+import io
 from astropy.io import fits
 import plotly.graph_objects as go
 from euv_spectra_app.extensions import *
@@ -130,8 +131,12 @@ def create_plotly_graph(files):
     for key, value in files.items():
         if 'model' in key:
             # get model data from fits file
-            hst = fits.open(value['filepath'])
-            data = hst[1].data
+            if 'fits_bytes' in value:
+                with fits.open(io.BytesIO(value['fits_bytes'])) as hst:
+                    data = hst[1].data
+            else:
+                with fits.open(value['filepath']) as hst:
+                    data = hst[1].data
             w_obs = data['WAVELENGTH'][0]
             f_obs = data['FLUX'][0]
             # get final model name by checking for flags or index #

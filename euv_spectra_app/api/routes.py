@@ -1,9 +1,11 @@
 from flask import Blueprint, request, render_template, current_app, jsonify
+import io
 import os
 from astropy.io import fits
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 from euv_spectra_app.extensions import *
+from euv_spectra_app.fits_storage import get_model_fits_bytes, get_test_fits_bytes, infer_model_subtype_from_filename, is_test_fits_filename
 from euv_spectra_app.flux_utils import FUV_WAVELENGTH, NUV_WAVELENGTH, average_error_from_limits, calculate_surface_scale, convert_microjanskies_to_flux_density, process_galex_flux_with_error, subtract_photospheric_flux as subtract_photospheric_flux_value
 from euv_spectra_app.models import StellarObject
 from euv_spectra_app.helpers_dbqueries import get_matching_subtype, get_matching_photosphere, get_models_with_chi_squared, get_models_within_limits, get_models_with_weighted_fuv, get_flux_ratios
@@ -858,17 +860,17 @@ def get_model_data():
     """
     try:
         fits_filename = get_text_arg('fits_filename', label='fits_filename', required=True)
-        filepath = None
         return_data = {}
-        for root, subfolders, filenames in os.walk(os.path.join(current_app.root_path, current_app.config['FITS_FOLDER'])):
-            for filename in filenames:
-                if filename == fits_filename:
-                    filepath = root + '/' + filename
+        if is_test_fits_filename(fits_filename):
+            fits_bytes = get_test_fits_bytes(fits_filename)
+        else:
+            model_subtype = infer_model_subtype_from_filename(fits_filename)
+            fits_bytes = get_model_fits_bytes(model_subtype, fits_filename)
 
-        if filepath is None:
+        if fits_bytes is None:
             return api_error('Data not yet available for that file.', status=404, code='not_found', field='fits_filename')
 
-        with fits.open(filepath) as hst:
+        with fits.open(io.BytesIO(fits_bytes)) as hst:
             data = hst[1].data
             return_data['wavelength_data'] = data['WAVELENGTH'][0].tolist()
             return_data['flux_data'] = data['FLUX'][0].tolist()

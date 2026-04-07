@@ -107,6 +107,7 @@ def submit_modal_form():
     fluxes = ['fuv', 'nuv', 'fuv_err', 'nuv_err']
 
     if request.method == 'POST':
+        current_app.logger.info('Processing modal parameter update submission.')
         if modal_form.validate_on_submit():
             for field in modal_form:
                 # ignoring all manual parameters, submit, csrf token, and catalog names
@@ -125,6 +126,7 @@ def submit_modal_form():
                         else:
                             setattr(stellar_object, unmanual_field, float(field.data))
             session[STELLAR_OBJECT_SESSION_KEY] = serialize_stellar_object(stellar_object)
+            current_app.logger.info('Modal parameter update stored in session.')
             return redirect(url_for('main.return_results'))
     return render_template('home.html', manual_form=manual_form, name_form=name_form, position_form=position_form, modal_form=modal_form, stellar_obj=stellar_object)
 
@@ -132,6 +134,7 @@ def submit_modal_form():
 @main.route('/manual-submit', methods=['POST'])
 def submit_manual_form():
     """Submit route for manual form."""
+    current_app.logger.info('Processing manual parameter submission.')
     form = ManualForm(request.form)
     stellar_object = StellarObject()
     fields_not_to_include = ['dist_unit', 'fuv_flag',
@@ -225,6 +228,15 @@ def submit_manual_form():
                         setattr(stellar_object, fieldname, None)
         stellar_object.get_stellar_subtype(
             stellar_object.teff, stellar_object.logg, stellar_object.mass)
+        current_app.logger.info(
+            'Manual submission parsed: teff=%s logg=%s mass=%s dist=%s rad=%s subtype=%s',
+            stellar_object.teff,
+            stellar_object.logg,
+            stellar_object.mass,
+            stellar_object.dist,
+            stellar_object.rad,
+            stellar_object.stellar_subtype,
+        )
         # remove any objects within the stellar object and assign it to fluxes
         stellar_object.fluxes.stellar_obj = build_flux_context(stellar_object)
         # run the check null, saturated, and upper limits fluxes
@@ -246,6 +258,7 @@ def submit_manual_form():
 @main.route('/results', methods=['GET', 'POST'])
 def return_results():
     """Submit route for results."""
+    current_app.logger.info('Entering results workflow.')
     modal_form = ModalForm()
     name_form = StarNameForm()
     position_form = PositionForm()
@@ -307,6 +320,7 @@ def return_results():
             current_app.logger.warning(exc.log_message)
             return redirect(url_for('main.error', msg=exc.user_message))
         stellar_object.model_subtype = subtype['model']
+        current_app.logger.info('Resolved PEGASUS subtype for results workflow: %s', stellar_object.model_subtype)
 
         # STEP 5: Check if model subtype data exists in database
         model_collection = f'{stellar_object.model_subtype.lower()}_grid'
@@ -389,6 +403,12 @@ def return_results():
             except PegasusError as exc:
                 current_app.logger.warning(exc.log_message)
                 return redirect(url_for('main.error', msg=exc.user_message))
+            current_app.logger.info(
+                'Queried model collection for FUV/NUV pair: fuv_flag=%s nuv_flag=%s matches=%s',
+                fuv_value.get('flag'),
+                nuv_value.get('flag'),
+                len(models),
+            )
             # STEP 10.3: Do additional processing on the returned models depending on the flag
             # SATURATED/UPPER LIMIT WORK FLOW:
                 # If one val is saturated/upper limit and one val is normal and no models are returned,
@@ -561,6 +581,8 @@ def return_results():
             error_msg = 'Matching PEGASUS model metadata was found, but no downloadable FITS files are currently available for this subtype.'
             return redirect(url_for('main.error', msg=error_msg))
 
+        current_app.logger.info('Prepared %s PEGASUS model(s) for result rendering.', len(return_models))
+
         # STEP 12: Generate plot using the compiled data
         plotly_fig = create_plotly_graph(plot_data)
         graphJSON = json.dumps(
@@ -578,21 +600,32 @@ def return_results():
 def check_directory(filename):
     """Checks if a FITS file exists."""
     if is_test_fits_filename(filename):
-        return jsonify({'exists': fits_asset_exists(None, filename)})
+        exists = fits_asset_exists(None, filename)
+        current_app.logger.info('Handled FITS availability check for test file: filename=%s exists=%s', filename, exists)
+        return jsonify({'exists': exists})
 
     model_subtype = infer_model_subtype_from_filename(filename)
-    return jsonify({'exists': fits_asset_exists(model_subtype, filename)})
+    exists = fits_asset_exists(model_subtype, filename)
+    current_app.logger.info(
+        'Handled FITS availability check: subtype=%s filename=%s exists=%s',
+        model_subtype,
+        filename,
+        exists,
+    )
+    return jsonify({'exists': exists})
 
 
 @main.route('/download/<filename>/<model>', methods=['GET', 'POST'])
 def download(filename, model):
     """Downloading FITS file on button click."""
+    current_app.logger.info('Handling FITS download request: filename=%s model=%s', filename, model)
     if is_test_fits_filename(filename):
         file_bytes = get_test_fits_bytes(filename)
     else:
         model_subtype = infer_model_subtype_from_filename(filename)
         file_bytes = get_model_fits_bytes(model_subtype, filename)
     if file_bytes is None:
+        current_app.logger.info('FITS download request could not be fulfilled because the file is unavailable: filename=%s', filename)
         flash('File is not available to download because it does not exist yet!', 'danger')
         return redirect(url_for('main.return_results'))
     # Create the zip file in memory
@@ -607,6 +640,7 @@ def download(filename, model):
     # Set the file pointer to the beginning of the file
     memory_file.seek(0)
     # Create a Flask response with the zip file
+    current_app.logger.info('Returning FITS download archive for filename=%s model=%s', filename, model)
     return send_file(memory_file, mimetype='application/zip', as_attachment=True, download_name=f'{model}.zip')
 
 

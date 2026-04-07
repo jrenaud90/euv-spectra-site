@@ -860,6 +860,7 @@ def get_model_data():
     """
     try:
         fits_filename = get_text_arg('fits_filename', label='fits_filename', required=True)
+        current_app.logger.info('API get_model_data requested for filename=%s', fits_filename)
         return_data = {}
         if is_test_fits_filename(fits_filename):
             fits_bytes = get_test_fits_bytes(fits_filename)
@@ -868,12 +869,14 @@ def get_model_data():
             fits_bytes = get_model_fits_bytes(model_subtype, fits_filename)
 
         if fits_bytes is None:
+            current_app.logger.info('API get_model_data could not find FITS data for filename=%s', fits_filename)
             return api_error('Data not yet available for that file.', status=404, code='not_found', field='fits_filename')
 
         with fits.open(io.BytesIO(fits_bytes)) as hst:
             data = hst[1].data
             return_data['wavelength_data'] = data['WAVELENGTH'][0].tolist()
             return_data['flux_data'] = data['FLUX'][0].tolist()
+        current_app.logger.info('API get_model_data returned FITS payload for filename=%s', fits_filename)
         return api_success(return_data)
     except ApiValidationError as exc:
         return parse_api_validation_error(exc)

@@ -86,12 +86,98 @@ If there are any questions regarding access, use, errors, or more, please email 
 - Copy `apps/pegasus/.env.example` to `apps/pegasus/.env` and fill in the Flask, mail, Mongo, and admin-key settings.
 - The shared compose stack starts `pegasus_mongodb` alongside the Flask container and restores the repository backup archive on first boot.
 - The restore script expects the archive source database to be `mydatabase`; override `MONGODB_ARCHIVE_SOURCE_DB` if your backup changes.
+- FITS storage can run in `local`, `s3`, or `hybrid` mode via `FITS_STORAGE_BACKEND`. For S3-backed deployments, set `FITS_S3_BUCKET`, optional `FITS_S3_PREFIX`, and `FITS_S3_REGION` in the Pegasus environment.
 - Admin data management is exposed at `/apps/pegasus/admin` and requires signing a server-issued challenge with the configured private key.
 - Flask Monitoring Dashboard is disabled by default. If you need it, enable it explicitly with the `DASHBOARD_*` environment variables instead of editing tracked config files.
 - External catalog lookups use configurable request budgets. Adjust `EXTERNAL_REQUEST_TIMEOUT`, `ASTROQUERY_TIMEOUT`, and `HOSTNAME_CACHE_TIMEOUT` in the Pegasus environment if upstream services are consistently slow.
 - Transient upstream failures are retried a small number of times. Tune `EXTERNAL_RETRY_ATTEMPTS` and `EXTERNAL_RETRY_BACKOFF_SECONDS` if a deployment needs a different retry budget.
 - Service health checks are cached briefly to avoid repeated probe requests on back-to-back searches. Tune `EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT` if you need faster freshness or lower overhead.
 - Test FITS fallbacks are disabled by default in code. Enable `ALLOW_TEST_FITS_FALLBACK=1` in the deployment environment only if you intentionally want placeholder spectra to appear in results.
+
+## Uploading new FITS files to S3
+
+Pegasus can read real model FITS files from S3 when `FITS_STORAGE_BACKEND` is set to `s3` or `hybrid`.
+
+### How Pegasus resolves S3 object keys
+
+- The preferred object key format is:
+
+```text
+<subtype>/<fits_filename>
+```
+
+- Example:
+
+```text
+M0/PEGASUS.M0.Teff=3850.logg=4.78.TRgrad=9.cmtop=6.cmin=4.fits
+```
+
+- If `FITS_S3_PREFIX` is set, Pegasus prepends that prefix automatically.
+- Pegasus also supports a legacy fallback key without the leading `PEGASUS.` prefix in the filename portion.
+- Even though the fallback exists, new uploads should use the canonical key that exactly matches MongoDB `fits_filename` values.
+
+### Before uploading
+
+- Confirm the MongoDB row already exists in the appropriate subtype grid collection such as `m0_grid`.
+- Confirm the row's `fits_filename` value is exactly the filename you plan to upload.
+- Confirm the subtype from the filename, for example `PEGASUS.M0...fits` belongs under the `M0/` prefix.
+
+### Upload command
+
+Example upload using the AWS CLI:
+
+```bash
+aws s3 cp \
+    /path/to/PEGASUS.M0.Teff=3850.logg=4.78.TRgrad=9.cmtop=6.cmin=4.fits \
+    s3://YOUR_BUCKET/M0/PEGASUS.M0.Teff=3850.logg=4.78.TRgrad=9.cmtop=6.cmin=4.fits
+```
+
+If your deployment uses a prefix such as `prod-fits`, upload to:
+
+```bash
+aws s3 cp \
+    /path/to/PEGASUS.M0.Teff=3850.logg=4.78.TRgrad=9.cmtop=6.cmin=4.fits \
+    s3://YOUR_BUCKET/prod-fits/M0/PEGASUS.M0.Teff=3850.logg=4.78.TRgrad=9.cmtop=6.cmin=4.fits
+```
+
+### Verifying the upload
+
+After upload, verify the object exists in S3:
+
+```bash
+aws s3 ls s3://YOUR_BUCKET/M0/PEGASUS.M0.Teff=3850.logg=4.78.TRgrad=9.cmtop=6.cmin=4.fits
+```
+
+Then verify Pegasus can see it from the running deployment:
+
+```bash
+curl -i 'http://localhost/apps/pegasus/check-directory/PEGASUS.M0.Teff=3850.logg=4.78.TRgrad=9.cmtop=6.cmin=4.fits'
+```
+
+Expected response:
+
+```json
+{"exists":true}
+```
+
+You can also verify the FITS data API can open the file:
+
+```bash
+curl -I 'http://localhost/apps/pegasus/api/get_model_data?fits_filename=PEGASUS.M0.Teff=3850.logg=4.78.TRgrad=9.cmtop=6.cmin=4.fits'
+```
+
+Expected result:
+
+- `200 OK` if Pegasus can load the FITS file
+- `404` if the metadata exists but the FITS object is still missing
+
+### Notes and pitfalls
+
+- New uploads should match the MongoDB `fits_filename` exactly, including the `PEGASUS.` prefix when present.
+- The subtype folder must match the filename, for example `M0/`, `M3/`, `M4/`, or `M6/`.
+- If the object is uploaded to the wrong subtype folder, Pegasus will not find it.
+- If you changed `FITS_STORAGE_BACKEND`, `FITS_S3_BUCKET`, `FITS_S3_PREFIX`, or `FITS_S3_REGION`, rebuild or restart Pegasus before testing.
+- If `ALLOW_TEST_FITS_FALLBACK=1`, results pages may still show placeholder spectra when a real FITS file is unavailable. Disable that flag when validating production coverage.
 
 ## Running tests
 

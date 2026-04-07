@@ -21,6 +21,34 @@ app.secret_key = app.config.get('SECRET_KEY')
 app.config['APPLICATION_ROOT'] = environ.get('APPLICATION_ROOT', '/apps/pegasus')
 app.config['PREFERRED_URL_SCHEME'] = environ.get('PREFERRED_URL_SCHEME', 'https')
 
+
+def _resolve_log_level(level_name):
+    return getattr(logging, str(level_name).upper(), logging.DEBUG)
+
+
+def _init_logging():
+    log_level = _resolve_log_level(app.config.get('LOG_LEVEL', 'DEBUG'))
+
+    gunicorn_error_logger = logging.getLogger('gunicorn.error')
+    root_logger = logging.getLogger()
+
+    if gunicorn_error_logger.handlers:
+        app.logger.handlers = gunicorn_error_logger.handlers
+        root_logger.handlers = gunicorn_error_logger.handlers
+
+    app.logger.setLevel(log_level)
+    root_logger.setLevel(log_level)
+    gunicorn_error_logger.setLevel(log_level)
+
+    logger.setLevel(log_level)
+    app.logger.info('Pegasus logging initialized at level %s.', logging.getLevelName(log_level))
+
+cache_dir = app.config.get('CACHE_DIR')
+if cache_dir:
+    os.makedirs(cache_dir, exist_ok=True)
+
+_init_logging()
+
 cache.init_app(app)
 session_manager.init_app(app)
 mail = Mail(app)

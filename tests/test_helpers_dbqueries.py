@@ -1,10 +1,21 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
+from app import app as flask_app
+from euv_spectra_app.extensions import cache
 from euv_spectra_app import helpers_dbqueries
 
 
 class HelpersDbQueriesTestCase(unittest.TestCase):
+    def setUp(self):
+        self.app_context = flask_app.app_context()
+        self.app_context.push()
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+        self.app_context.pop()
+
     def test_construct_flux_query_for_normal_flux(self):
         query = helpers_dbqueries.construct_flux_query('fuv', 'normal', 100.0, 5.0)
 
@@ -35,6 +46,28 @@ class HelpersDbQueriesTestCase(unittest.TestCase):
         self.assertEqual(weighted_add[2]['$multiply'], ['$diff_mass', 5])
         self.assertEqual(pipeline[-2], {'$sort': {'diff_sum': 1}})
         self.assertEqual(pipeline[-1], {'$limit': 1})
+
+    @patch('euv_spectra_app.helpers_dbqueries.model_parameter_grid')
+    def test_get_matching_subtype_uses_cache_on_repeat_lookup(self, mock_model_parameter_grid):
+        mock_model_parameter_grid.aggregate.return_value = [{'_id': 'x', 'model': 'M0'}]
+
+        first = helpers_dbqueries.get_matching_subtype(4014.0, 4.68, 0.64)
+        second = helpers_dbqueries.get_matching_subtype(4014.0, 4.68, 0.64)
+
+        self.assertEqual(first['model'], 'M0')
+        self.assertEqual(second['model'], 'M0')
+        mock_model_parameter_grid.aggregate.assert_called_once()
+
+    @patch('euv_spectra_app.helpers_dbqueries.photosphere_models')
+    def test_get_matching_photosphere_uses_cache_on_repeat_lookup(self, mock_photosphere_models):
+        mock_photosphere_models.aggregate.return_value = [{'_id': 'x', 'fits_filename': 'photo.fits'}]
+
+        first = helpers_dbqueries.get_matching_photosphere(3850.0, 4.78, 0.53)
+        second = helpers_dbqueries.get_matching_photosphere(3850.0, 4.78, 0.53)
+
+        self.assertEqual(first['fits_filename'], 'photo.fits')
+        self.assertEqual(second['fits_filename'], 'photo.fits')
+        mock_photosphere_models.aggregate.assert_called_once()
 
     @patch('euv_spectra_app.helpers_dbqueries.db')
     def test_get_models_within_limits_builds_expected_match_bounds(self, mock_db):

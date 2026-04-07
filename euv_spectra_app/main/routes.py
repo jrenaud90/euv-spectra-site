@@ -69,7 +69,7 @@ def homepage():
             stellar_object.star_name = name_form.star_name.data
             stellar_object.get_stellar_parameters()
 
-        if hasattr(stellar_object, 'modal_page_error_msg'):
+        if getattr(stellar_object, 'modal_page_error_msg', None):
             # check if there were any errors returned from searching databases
             return redirect(url_for('main.error', msg=stellar_object.modal_page_error_msg))
         for msg in stellar_object.modal_error_msgs:
@@ -613,6 +613,14 @@ def check_directory(filename):
         exists,
     )
     return jsonify({'exists': exists})
+
+
+@main.route('/clear_cache', methods=['GET', 'POST'])
+def clear_cache_route():
+    """Clears all Pegasus application caches."""
+    cache.clear()
+    current_app.logger.info('Pegasus cache cleared via /clear_cache.')
+    return jsonify({'ok': True, 'message': 'Pegasus cache cleared.'})
 
 
 @main.route('/download/<filename>/<model>', methods=['GET', 'POST'])

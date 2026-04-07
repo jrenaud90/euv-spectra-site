@@ -38,6 +38,7 @@ customSimbad.remove_votable_fields('coordinates')
 customSimbad.add_votable_fields(
     'ra', 'dec', 'pmra', 'pmdec', 'plx', 'rv_value', 'typed_id')
 customSimbad.TIMEOUT = ASTROQUERY_TIMEOUT_SECONDS
+LOOKUP_CACHE_TIMEOUT_SECONDS = app.config.get('LOOKUP_CACHE_TIMEOUT', app.config.get('CACHE_DEFAULT_TIMEOUT', 86400))
 
 
 def _normalize_star_name_key(star_name):
@@ -686,6 +687,73 @@ class StellarObject():
         if self.fluxes is None:
             self.fluxes = GalexFluxes()
 
+    def _lookup_cache_key(self):
+        if self.star_name:
+            normalized_name = ' '.join(str(self.star_name).strip().upper().split())
+            return f'stellar_lookup:name:{normalized_name}'
+        if self.position:
+            normalized_position = ' '.join(str(self.position).strip().upper().split())
+            return f'stellar_lookup:position:{normalized_position}'
+        return None
+
+    def _serialize_lookup_state(self):
+        flux_payload = None
+        if self.fluxes is not None:
+            flux_payload = {
+                key: value
+                for key, value in vars(self.fluxes).items()
+                if key != 'stellar_obj'
+            }
+
+        pm_payload = None
+        if self.pm_data is not None:
+            pm_payload = dict(vars(self.pm_data))
+
+        return {
+            'star_name': self.star_name,
+            'position': self.position,
+            'coords': self.coords,
+            'teff': self.teff,
+            'logg': self.logg,
+            'mass': self.mass,
+            'dist': self.dist,
+            'rad': self.rad,
+            'stellar_subtype': self.stellar_subtype,
+            'model_collection': getattr(self, 'model_collection', None),
+            'pm_corrected_coords': self.pm_corrected_coords,
+            'modal_error_msgs': list(getattr(self, 'modal_error_msgs', []) or []),
+            'modal_page_error_msg': getattr(self, 'modal_page_error_msg', None),
+            'pm_data': pm_payload,
+            'fluxes': flux_payload,
+        }
+
+    def _restore_lookup_state(self, payload):
+        for field in ['star_name', 'position', 'coords', 'teff', 'logg', 'mass', 'dist', 'rad', 'stellar_subtype', 'pm_corrected_coords', 'modal_page_error_msg']:
+            setattr(self, field, payload.get(field))
+
+        self.modal_error_msgs = list(payload.get('modal_error_msgs') or [])
+
+        model_collection = payload.get('model_collection')
+        if model_collection is not None:
+            self.model_collection = model_collection
+
+        pm_payload = payload.get('pm_data')
+        self.pm_data = ProperMotionData(**pm_payload) if pm_payload is not None else None
+
+        flux_payload = payload.get('fluxes')
+        if flux_payload is not None:
+            self.fluxes = GalexFluxes(**flux_payload)
+            self.fluxes.stellar_obj = {
+                'teff': self.teff,
+                'logg': self.logg,
+                'mass': self.mass,
+                'dist': self.dist,
+                'rad': self.rad,
+                'stellar_subtype': self.stellar_subtype,
+            }
+        elif self.fluxes is None:
+            self.fluxes = GalexFluxes()
+
     def has_all_stellar_parameters(self):
         # Checks to see that all stellar intrinstic parameters exist.
         if self.teff is not None and self.logg is not None and self.mass is not None and self.dist is not None and self.rad is not None:
@@ -728,7 +796,19 @@ class StellarObject():
             No errors are raised but if an error is detected from within a catalog search, the 
             function returns the error as a string and is sent to the front end error page to be displayed.
         """
+        cache_key = self._lookup_cache_key()
+        if cache_key is not None:
+            cached_lookup = cache.get(cache_key)
+            if cached_lookup is not None:
+                logger.info('Using cached stellar lookup for key %s.', cache_key)
+                self._restore_lookup_state(cached_lookup)
+                return
+
         self._run_lookup_pipeline()
+
+        if cache_key is not None:
+            cache.set(cache_key, self._serialize_lookup_state(), timeout=LOOKUP_CACHE_TIMEOUT_SECONDS)
+            logger.info('Cached stellar lookup result for key %s.', cache_key)
 
     def _run_lookup_pipeline(self):
         # STEP 1: Check for search type (position or name)

@@ -88,6 +88,34 @@ class MainRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertIn('/apps/pegasus/', response.location)
 
+    @patch('euv_spectra_app.main.routes.render_template')
+    @patch('euv_spectra_app.main.routes.insert_data_into_form')
+    @patch('euv_spectra_app.main.routes.StellarObject.get_stellar_parameters')
+    def test_homepage_post_does_not_redirect_to_error_when_modal_page_error_is_none(
+        self,
+        mock_get_stellar_parameters,
+        mock_insert,
+        mock_render_template,
+    ):
+        def populate_cached_like_state(stellar_object):
+            stellar_object.star_name = 'GJ 338 B'
+            stellar_object.teff = 4014.0
+            stellar_object.logg = 4.68
+            stellar_object.mass = 0.64
+            stellar_object.dist = 6.33
+            stellar_object.rad = 0.58
+            stellar_object.modal_page_error_msg = None
+
+        mock_get_stellar_parameters.side_effect = populate_cached_like_state
+        mock_insert.return_value = None
+        mock_render_template.return_value = 'home rendered'
+
+        response = self.client.post('/', data={'star_name': 'GJ 338 B', 'submit': 'Search →'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_data(as_text=True), 'home rendered')
+        mock_render_template.assert_called_once()
+
     @patch('euv_spectra_app.main.routes.insert_data_into_form')
     @patch('euv_spectra_app.main.routes.deserialize_stellar_object')
     def test_results_redirects_to_error_when_flux_processing_fails(self, mock_deserialize, mock_insert):
@@ -148,6 +176,14 @@ class MainRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         mock_get_model_fits_bytes.assert_called_once_with('M0', 'PEGASUS.M0.synthetic.fits')
         mock_send_file.assert_called_once()
+
+    @patch('euv_spectra_app.main.routes.cache.clear')
+    def test_clear_cache_route_clears_application_cache(self, mock_cache_clear):
+        response = self.client.get('/clear_cache')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {'ok': True, 'message': 'Pegasus cache cleared.'})
+        mock_cache_clear.assert_called_once_with()
 
 
 if __name__ == '__main__':

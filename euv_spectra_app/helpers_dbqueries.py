@@ -1,5 +1,12 @@
 from euv_spectra_app.extensions import *
 
+
+LOOKUP_CACHE_TIMEOUT_SECONDS = app.config.get('LOOKUP_CACHE_TIMEOUT', app.config.get('CACHE_DEFAULT_TIMEOUT', 86400))
+
+
+def _grid_lookup_cache_key(prefix, teff, logg, mass):
+    return f'{prefix}:{float(teff):.6f}:{float(logg):.6f}:{float(mass):.6f}'
+
 def get_matching_subtype(teff, logg, mass):
     """Matches to a subtype in the PEGASUS grid.
 
@@ -18,6 +25,11 @@ def get_matching_subtype(teff, logg, mass):
         the stellar subtype that best matches the user's target based on temperature, 
         surface gravity, and mass.
     """
+    cache_key = _grid_lookup_cache_key('matching_subtype', teff, logg, mass)
+    cached_result = cache.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+
     matching_subtype = model_parameter_grid.aggregate([
         {
             "$addFields": {
@@ -40,7 +52,9 @@ def get_matching_subtype(teff, logg, mass):
         { "$sort": { "diff_sum": 1 } },
         { "$limit": 1 },
     ])
-    return list(matching_subtype)[0]
+    result = list(matching_subtype)[0]
+    cache.set(cache_key, result, timeout=LOOKUP_CACHE_TIMEOUT_SECONDS)
+    return result
 
 
 def get_matching_photosphere(teff, logg, mass):
@@ -61,6 +75,11 @@ def get_matching_photosphere(teff, logg, mass):
         the photosphere that best matches the user's target based on temperature,
         surface gravity, and mass.
     """
+    cache_key = _grid_lookup_cache_key('matching_photosphere', teff, logg, mass)
+    cached_result = cache.get(cache_key)
+    if cached_result is not None:
+        return cached_result
+
     matching_photosphere_model = photosphere_models.aggregate([
         {
             "$addFields": {
@@ -72,7 +91,9 @@ def get_matching_photosphere(teff, logg, mass):
         { "$sort": { "diff_teff": 1, "diff_logg": 1, "diff_mass": 1 } },
         { "$limit": 1 },
     ])
-    return list(matching_photosphere_model)[0]
+    result = list(matching_photosphere_model)[0]
+    cache.set(cache_key, result, timeout=LOOKUP_CACHE_TIMEOUT_SECONDS)
+    return result
 
 def search_db(model_collection, fuv, nuv):
     # NORMAL SEARCH: fuv, fuv_err, nuv, and nuv_err are all there, search within limits

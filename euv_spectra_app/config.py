@@ -9,13 +9,16 @@ def _env_flag(name, default="0"):
 
 
 class Config(object):
+    CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "86400"))
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").strip().upper()
     SECRET_KEY = os.getenv("SECRET_KEY")
     EXTERNAL_REQUEST_TIMEOUT = float(os.getenv("EXTERNAL_REQUEST_TIMEOUT", "10"))
     ASTROQUERY_TIMEOUT = int(os.getenv("ASTROQUERY_TIMEOUT", "30"))
-    HOSTNAME_CACHE_TIMEOUT = int(os.getenv("HOSTNAME_CACHE_TIMEOUT", "3600"))
+    HOSTNAME_CACHE_TIMEOUT = int(os.getenv("HOSTNAME_CACHE_TIMEOUT", str(CACHE_TTL_SECONDS)))
     EXTERNAL_RETRY_ATTEMPTS = int(os.getenv("EXTERNAL_RETRY_ATTEMPTS", "2"))
     EXTERNAL_RETRY_BACKOFF_SECONDS = float(os.getenv("EXTERNAL_RETRY_BACKOFF_SECONDS", "1.0"))
-    EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT = int(os.getenv("EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT", "300"))
+    EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT = int(os.getenv("EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT", str(CACHE_TTL_SECONDS)))
+    LOOKUP_CACHE_TIMEOUT = int(os.getenv("LOOKUP_CACHE_TIMEOUT", str(CACHE_TTL_SECONDS)))
     ALLOW_TEST_FITS_FALLBACK = _env_flag("ALLOW_TEST_FITS_FALLBACK", "0")
     DASHBOARD_ENABLED = _env_flag("DASHBOARD_ENABLED", "0")
     DASHBOARD_CONFIG_PATH = os.getenv("DASHBOARD_CONFIG_PATH")
@@ -64,8 +67,10 @@ class Config(object):
     FITS_FOLDER = os.getenv("FITS_FOLDER_PATH")
 
     # for cache
-    CACHE_TYPE = 'simple'
-    CACHE_DEFAULT_TIMEOUT = 1800
+    CACHE_TYPE = 'FileSystemCache'
+    CACHE_DEFAULT_TIMEOUT = CACHE_TTL_SECONDS
+    CACHE_DIR = os.getenv("CACHE_DIR", "/tmp/pegasus-cache")
+    CACHE_THRESHOLD = int(os.getenv("CACHE_THRESHOLD", "2000"))
 
     # for captcha
     RECAPTCHA_PUBLIC_KEY = os.getenv("RECAPTCHA_PUBLIC_KEY")

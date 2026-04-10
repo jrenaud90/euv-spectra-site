@@ -97,16 +97,7 @@ class MainRoutesTestCase(unittest.TestCase):
         mock_insert,
         mock_render_template,
     ):
-        def populate_cached_like_state(stellar_object):
-            stellar_object.star_name = 'GJ 338 B'
-            stellar_object.teff = 4014.0
-            stellar_object.logg = 4.68
-            stellar_object.mass = 0.64
-            stellar_object.dist = 6.33
-            stellar_object.rad = 0.58
-            stellar_object.modal_page_error_msg = None
-
-        mock_get_stellar_parameters.side_effect = populate_cached_like_state
+        mock_get_stellar_parameters.return_value = None
         mock_insert.return_value = None
         mock_render_template.return_value = 'home rendered'
 
@@ -115,6 +106,33 @@ class MainRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_data(as_text=True), 'home rendered')
         mock_render_template.assert_called_once()
+
+    @patch('euv_spectra_app.main.routes.StellarObject.get_stellar_parameters')
+    def test_homepage_post_redirects_to_error_with_lookup_details_in_session(self, mock_get_stellar_parameters):
+        def populate_failure(stellar_object):
+            stellar_object.modal_page_error_msg = 'Unable to retrieve any external catalog data for GJ 338 B.'
+            stellar_object.lookup_details = [
+                {'source': 'NASA Exoplanet Archive', 'message': 'Nothing found in NEA.'},
+                {'source': 'MAST GALEX', 'message': 'No GALEX observations found.'},
+            ]
+
+        mock_get_stellar_parameters.side_effect = populate_failure
+
+        response = self.client.post('/', data={'star_name': 'GJ 338 B', 'submit': 'Search →'})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/apps/pegasus/error?', response.location)
+        with self.client.session_transaction() as session_state:
+            self.assertEqual(
+                session_state[routes.ERROR_CONTEXT_SESSION_KEY],
+                {
+                    'summary': 'Unable to retrieve any external catalog data for GJ 338 B.',
+                    'details': [
+                        {'source': 'NASA Exoplanet Archive', 'message': 'Nothing found in NEA.'},
+                        {'source': 'MAST GALEX', 'message': 'No GALEX observations found.'},
+                    ],
+                },
+            )
 
     @patch('euv_spectra_app.main.routes.insert_data_into_form')
     @patch('euv_spectra_app.main.routes.deserialize_stellar_object')
@@ -184,6 +202,24 @@ class MainRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {'ok': True, 'message': 'Pegasus cache cleared.'})
         mock_cache_clear.assert_called_once_with()
+
+    def test_error_route_renders_structured_error_details(self):
+        with self.client.session_transaction() as session_state:
+            session_state[routes.ERROR_CONTEXT_SESSION_KEY] = {
+                'summary': 'Unable to retrieve any external catalog data for GJ 338 B.',
+                'details': [
+                    {'source': 'NASA Exoplanet Archive', 'message': 'Nothing found in NEA.'},
+                    {'source': 'MAST GALEX', 'message': 'No GALEX observations found.'},
+                ],
+            }
+
+        response = self.client.get('/error')
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('What failed', body)
+        self.assertIn('NASA Exoplanet Archive', body)
+        self.assertIn('No GALEX observations found.', body)
 
 
 if __name__ == '__main__':

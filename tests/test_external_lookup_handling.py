@@ -86,10 +86,17 @@ class ExternalLookupHandlingTestCase(unittest.TestCase):
 
         self.assertEqual(
             stellar_object.modal_page_error_msg,
-            'Nothing found for your target in the NExSci database or the MAST GALEX database.',
+            'Unable to retrieve any external catalog data for GJ 338 B.',
         )
         self.assertIn('NEA unavailable for test.', stellar_object.modal_error_msgs)
         self.assertIn('GALEX unavailable for test.', stellar_object.modal_error_msgs)
+        self.assertEqual(
+            stellar_object.lookup_details,
+            [
+                {'source': 'NASA Exoplanet Archive', 'message': 'NEA unavailable for test.'},
+                {'source': 'MAST GALEX', 'message': 'GALEX unavailable for test.'},
+            ],
+        )
 
 
 if __name__ == '__main__':

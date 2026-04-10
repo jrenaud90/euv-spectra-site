@@ -24,6 +24,25 @@ logger = logging.getLogger(__name__)
 
 
 STELLAR_OBJECT_SESSION_KEY = 'stellar_object'
+ERROR_CONTEXT_SESSION_KEY = 'error_context'
+
+
+def _store_error_context(summary, *, details=None):
+    session[ERROR_CONTEXT_SESSION_KEY] = {
+        'summary': summary,
+        'details': list(details or []),
+    }
+
+
+def _pop_error_context():
+    return session.pop(ERROR_CONTEXT_SESSION_KEY, None)
+
+
+def _should_show_manual_form_hint(summary, details):
+    searchable_text = ' '.join(
+        [summary] + [detail.get('message', '') for detail in details if isinstance(detail, dict)]
+    )
+    return 'NExSci' in searchable_text or 'NASA Exoplanet Archive' in searchable_text
 
 @main.context_processor
 def inject_form():
@@ -71,6 +90,13 @@ def homepage():
 
         if getattr(stellar_object, 'modal_page_error_msg', None):
             # check if there were any errors returned from searching databases
+            error_details = list(getattr(stellar_object, 'lookup_details', []) or [])
+            current_app.logger.warning(
+                'Homepage lookup failed: summary=%s details=%s',
+                stellar_object.modal_page_error_msg,
+                error_details,
+            )
+            _store_error_context(stellar_object.modal_page_error_msg, details=error_details)
             return redirect(url_for('main.error', msg=stellar_object.modal_page_error_msg))
         for msg in stellar_object.modal_error_msgs:
             flash(msg, 'warning')
@@ -304,10 +330,12 @@ def return_results():
         except PegasusError as exc:
             current_app.logger.warning(exc.log_message)
             error_msg = exc.user_message
+            _store_error_context(error_msg)
             return redirect(url_for('main.error', msg=error_msg))
         except (TypeError, ValueError, KeyError, PyMongoError) as exc:
             current_app.logger.warning('Unable to process GALEX fluxes: %s', exc)
             error_msg = 'Unable to process GALEX fluxes with current database data. Please try again later or enter your values manually.'
+            _store_error_context(error_msg)
             return redirect(url_for('main.error', msg=error_msg))
 
         # STEP 3: Create new PegasusGrid object and insert the stellar object with corrected fluxes
@@ -318,6 +346,7 @@ def return_results():
             subtype = pegasus.query_pegasus_subtype()
         except PegasusError as exc:
             current_app.logger.warning(exc.log_message)
+            _store_error_context(exc.user_message)
             return redirect(url_for('main.error', msg=exc.user_message))
         stellar_object.model_subtype = subtype['model']
         current_app.logger.info('Resolved PEGASUS subtype for results workflow: %s', stellar_object.model_subtype)
@@ -328,6 +357,7 @@ def return_results():
             error_msg = f'The grid for model subtype {stellar_object.model_subtype} is currently unavailable. \
                           Currently available subtypes: M0, M3, M4, M6. \nPlease contact us with your stellar \
                           parameters and returned subtype if you think this is incorrect.'
+            _store_error_context(error_msg)
             return redirect(url_for('main.error', msg=error_msg))
 
         # STEP 6: Instantiate the following objects
@@ -402,6 +432,7 @@ def return_results():
                 models = pegasus.query_model_collection(fuv_value, nuv_value)
             except PegasusError as exc:
                 current_app.logger.warning(exc.log_message)
+                _store_error_context(exc.user_message)
                 return redirect(url_for('main.error', msg=exc.user_message))
             current_app.logger.info(
                 'Queried model collection for FUV/NUV pair: fuv_flag=%s nuv_flag=%s matches=%s',
@@ -429,6 +460,7 @@ def return_results():
                             fuv_value, nuv_copy)
                     except PegasusError as exc:
                         current_app.logger.warning(exc.log_message)
+                        _store_error_context(exc.user_message)
                         return redirect(url_for('main.error', msg=exc.user_message))
                     if len(models) > 0:
                         flash(f'{len(models)} results found within 3 σ of the GALEX NUV flux.', 'success')
@@ -441,6 +473,7 @@ def return_results():
                             fuv_value, nuv_copy)
                     except PegasusError as exc:
                         current_app.logger.warning(exc.log_message)
+                        _store_error_context(exc.user_message)
                         return redirect(url_for('main.error', msg=exc.user_message))
                     if len(models) > 0:
                         flash(f'{len(models)} results found within 5 σ of the GALEX NUV flux.', 'success')
@@ -460,6 +493,7 @@ def return_results():
                             fuv_copy, nuv_value)
                     except PegasusError as exc:
                         current_app.logger.warning(exc.log_message)
+                        _store_error_context(exc.user_message)
                         return redirect(url_for('main.error', msg=exc.user_message))
                     if len(models) > 0:
                         flash(f'{len(models)} results found within 3 σ of the GALEX FUV flux.', 'success')
@@ -472,6 +506,7 @@ def return_results():
                             fuv_copy, nuv_value)
                     except PegasusError as exc:
                         current_app.logger.warning(exc.log_message)
+                        _store_error_context(exc.user_message)
                         return redirect(url_for('main.error', msg=exc.user_message))
                     if len(models) > 0:
                         flash(f'{len(models)} results found within 5 σ of the GALEX FUV flux.', 'success')
@@ -518,6 +553,7 @@ def return_results():
                         models_weighted = pegasus.query_pegasus_weighted_fuv()
                     except PegasusError as exc:
                         current_app.logger.warning(exc.log_message)
+                        _store_error_context(exc.user_message)
                         return redirect(url_for('main.error', msg=exc.user_message))
                     # If there are no models found within limits, return models ONLY with FUV < NUV, return with chi squared values
                     if len(models_weighted) > 0:
@@ -579,6 +615,7 @@ def return_results():
                         plot_data[key]['flag'] = 'Upper Limit Search<br> Option B<sup>[5]</sup>'
         if not return_models:
             error_msg = 'Matching PEGASUS model metadata was found, but no downloadable FITS files are currently available for this subtype.'
+            _store_error_context(error_msg)
             return redirect(url_for('main.error', msg=error_msg))
 
         current_app.logger.info('Prepared %s PEGASUS model(s) for result rendering.', len(return_models))
@@ -832,12 +869,13 @@ def send_email():
 @main.route('/error')
 def error():
     """Custom error page."""
-    msg = request.args.get('msg', 'Something went wrong. Please try again later.')
-    show_nexsci_error_msg = False
-    if 'NExSci' in msg:
-        show_nexsci_error_msg = True
+    error_context = _pop_error_context() or {}
+    msg = error_context.get('summary') or request.args.get('msg', 'Something went wrong. Please try again later.')
+    error_details = error_context.get('details') or []
+    show_nexsci_error_msg = _should_show_manual_form_hint(msg, error_details)
+    current_app.logger.info('Rendering error page: summary=%s details=%s', msg, error_details)
     session['modal_show'] = False
-    return render_template('error.html', error_msg=msg, manual_form_error_msg=show_nexsci_error_msg)
+    return render_template('error.html', error_msg=msg, error_details=error_details, manual_form_error_msg=show_nexsci_error_msg)
 
 
 @main.app_errorhandler(503)

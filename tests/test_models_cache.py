@@ -49,6 +49,34 @@ class ModelsCacheTestCase(unittest.TestCase):
         self.assertEqual(second.fluxes.fuv, 10.0)
         self.assertEqual(second.pm_data.pm_ra, 1.0)
 
+    @patch.object(StellarObject, '_run_lookup_pipeline', autospec=True)
+    def test_get_stellar_parameters_bypasses_cached_fatal_lookup_and_reruns(self, mock_run_lookup_pipeline):
+        failure = StellarObject(star_name='GJ 338 B')
+        failure.modal_page_error_msg = 'Unable to retrieve any external catalog data for GJ 338 B.'
+        cache.set(failure._lookup_cache_key(), failure._serialize_lookup_state())
+
+        def populate_success(stellar_object):
+            stellar_object.star_name = 'GJ 338 B'
+            stellar_object.coords = ('06 10 34.6', '+35 58 11')
+            stellar_object.teff = 4014.0
+            stellar_object.logg = 4.68
+            stellar_object.mass = 0.64
+            stellar_object.dist = 6.33
+            stellar_object.rad = 0.58
+            stellar_object.fluxes = GalexFluxes(fuv=10.0, nuv=20.0, fuv_err=1.0, nuv_err=2.0)
+            stellar_object.modal_page_error_msg = None
+
+        mock_run_lookup_pipeline.side_effect = populate_success
+
+        stellar_object = StellarObject(star_name='GJ 338 B')
+        stellar_object.get_stellar_parameters()
+
+        self.assertEqual(mock_run_lookup_pipeline.call_count, 1)
+        self.assertIsNone(stellar_object.modal_page_error_msg)
+        self.assertEqual(stellar_object.teff, 4014.0)
+        cached_payload = cache.get(stellar_object._lookup_cache_key())
+        self.assertIsNone(cached_payload.get('modal_page_error_msg'))
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -8,6 +8,16 @@
     <div class="text-center">
         <h1>Oops...</h1>
         <p>{{ error_msg }}</p>
+        {% if error_details %}
+            <div class="text-start mx-auto mt-4" style="max-width: 48rem;">
+                <h2 class="h5">What Failed:</h2>
+                <ul>
+                    {% for detail in error_details %}
+                        <li><strong>{{ detail.source }}:</strong> {{ detail.message }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        {% endif %}
         {% if manual_form_error_msg %}
             {% include 'partials/manual_form_error_msg.html' %}
         {% endif %}

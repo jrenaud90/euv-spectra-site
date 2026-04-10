@@ -58,6 +58,7 @@ def normalize_star_name(star_name):
 
     corrected_star_name = normalized_input.replace("'", "''")
     try:
+        logger.debug('Attempting NEA hostname normalization lookup for %s.', normalized_input)
         hostname_rows = NasaExoplanetArchive.query_criteria(
             table="pscomppars",
             select="distinct hostname",
@@ -72,9 +73,11 @@ def normalize_star_name(star_name):
     for hostname in hostname_rows['hostname']:
         if hostname.upper().replace(' ', '') == normalized_compare:
             cache.set(cache_key, hostname, timeout=HOSTNAME_CACHE_TIMEOUT_SECONDS)
+            logger.debug('Normalized hostname %s -> %s via NEA.', normalized_input, hostname)
             return hostname
 
     cache.set(cache_key, normalized_input, timeout=HOSTNAME_CACHE_TIMEOUT_SECONDS)
+    logger.debug('No canonical hostname match found for %s; using original input.', normalized_input)
     return normalized_input
 
 
@@ -684,8 +687,24 @@ class StellarObject():
         self.fluxes = fluxes
         self.stellar_subtype = stellar_subtype
         self.modal_error_msgs = []
+        self.lookup_details = []
         if self.fluxes is None:
             self.fluxes = GalexFluxes()
+
+    def _target_label(self):
+        return self.star_name or self.position or self.coords or 'unknown target'
+
+    def _record_lookup_issue(self, source, message):
+        detail = {'source': source, 'message': message}
+        self.lookup_details.append(detail)
+        self.modal_error_msgs.append(message)
+
+    def _cached_lookup_is_retryable(self, payload):
+        if payload is None:
+            return False
+        if payload.get('modal_page_error_msg'):
+            return True
+        return False
 
     def _lookup_cache_key(self):
         if self.star_name:
@@ -722,6 +741,7 @@ class StellarObject():
             'model_collection': getattr(self, 'model_collection', None),
             'pm_corrected_coords': self.pm_corrected_coords,
             'modal_error_msgs': list(getattr(self, 'modal_error_msgs', []) or []),
+            'lookup_details': list(getattr(self, 'lookup_details', []) or []),
             'modal_page_error_msg': getattr(self, 'modal_page_error_msg', None),
             'pm_data': pm_payload,
             'fluxes': flux_payload,
@@ -732,6 +752,7 @@ class StellarObject():
             setattr(self, field, payload.get(field))
 
         self.modal_error_msgs = list(payload.get('modal_error_msgs') or [])
+        self.lookup_details = list(payload.get('lookup_details') or [])
 
         model_collection = payload.get('model_collection')
         if model_collection is not None:
@@ -797,44 +818,69 @@ class StellarObject():
             function returns the error as a string and is sent to the front end error page to be displayed.
         """
         cache_key = self._lookup_cache_key()
+        logger.info('Starting stellar lookup for %s.', self._target_label())
         if cache_key is not None:
             cached_lookup = cache.get(cache_key)
             if cached_lookup is not None:
-                logger.info('Using cached stellar lookup for key %s.', cache_key)
-                self._restore_lookup_state(cached_lookup)
-                return
+                if self._cached_lookup_is_retryable(cached_lookup):
+                    logger.info('Ignoring cached failed stellar lookup for key %s and rerunning live lookup.', cache_key)
+                else:
+                    logger.info('Using cached stellar lookup for key %s.', cache_key)
+                    self._restore_lookup_state(cached_lookup)
+                    return
 
         self._run_lookup_pipeline()
 
         if cache_key is not None:
-            cache.set(cache_key, self._serialize_lookup_state(), timeout=LOOKUP_CACHE_TIMEOUT_SECONDS)
-            logger.info('Cached stellar lookup result for key %s.', cache_key)
+            if getattr(self, 'modal_page_error_msg', None):
+                logger.info('Skipping cache write for failed stellar lookup key %s.', cache_key)
+            else:
+                cache.set(cache_key, self._serialize_lookup_state(), timeout=LOOKUP_CACHE_TIMEOUT_SECONDS)
+                logger.info('Cached stellar lookup result for key %s.', cache_key)
+
+        logger.info(
+            'Completed stellar lookup for %s: page_error=%s warnings=%s has_stellar_params=%s has_fluxes=%s',
+            self._target_label(),
+            bool(getattr(self, 'modal_page_error_msg', None)),
+            len(self.modal_error_msgs),
+            self.has_all_stellar_parameters(),
+            any(getattr(self.fluxes, attr, None) is not None for attr in ('fuv', 'nuv', 'fuv_saturated', 'nuv_saturated', 'fuv_upper_limit', 'nuv_upper_limit')),
+        )
 
     def _run_lookup_pipeline(self):
+        self.lookup_details = []
+        self.modal_error_msgs = []
+        logger.info('Running lookup pipeline for %s.', self._target_label())
         # STEP 1: Check for search type (position or name)
         if self.position:
             # STEP Pos1: Change coordinates to ra and dec
             try:
                 self.convert_coords(self.position)
             except CatalogLookupError as exc:
+                logger.warning('Coordinate conversion failed for %s: %s', self.position, exc.log_message)
                 self.modal_page_error_msg = exc.user_message
                 return
         elif self.star_name:
             self.star_name = normalize_star_name(self.star_name)
+            logger.info('Normalized star-name submission to %s.', self.star_name)
             # STEP Name2: Get coordinate and proper motion info from Simbad
             try:
                 self.query_simbad(self.star_name)
             except CatalogLookupError as exc:
-                self.modal_error_msgs.append(exc.user_message)
+                logger.info('SIMBAD step finished with recoverable issue for %s: %s', self.star_name, exc.log_message)
+                self._record_lookup_issue('SIMBAD', exc.user_message)
             # STEP Name3: Put PM and Coord info into proper motion correction function
             if self.pm_data is not None:
                 try:
                     self.pm_corrected_coords = self.pm_data.correct_pm(
                         self.star_name, self.coords)
+                    logger.info('Proper-motion correction succeeded for %s: %s', self.star_name, self.pm_corrected_coords)
                 except (CatalogLookupError, DataProcessingError) as exc:
                     if exc.recoverable:
-                        self.modal_error_msgs.append(exc.user_message)
+                        logger.info('Proper-motion correction returned recoverable issue for %s: %s', self.star_name, exc.log_message)
+                        self._record_lookup_issue('GALEX observation time', exc.user_message)
                     else:
+                        logger.warning('Proper-motion correction failed fatally for %s: %s', self.star_name, exc.log_message)
                         self.modal_page_error_msg = exc.user_message
                         return
         # STEP 2: Search NASA Exoplanet Archive with the search term & type
@@ -843,26 +889,43 @@ class StellarObject():
             self.query_nasa_exoplanet_archive(self.star_name, self.coords)
         except CatalogLookupError as exc:
             nea_data = exc
-            self.modal_error_msgs.append(exc.user_message)
+            logger.info('NEA step finished with recoverable issue for %s: %s', self._target_label(), exc.log_message)
+            self._record_lookup_issue('NASA Exoplanet Archive', exc.user_message)
         # STEP 3: Get the stellar subtype. Needed for GALEX flux predictions if a flux is null
         if self.teff is not None and self.logg is not None and self.mass is not None:
             try:
                 self.get_stellar_subtype(self.teff, self.logg, self.mass)
             except DataProcessingError as exc:
-                self.modal_error_msgs.append(exc.user_message)
+                logger.info('Subtype resolution returned recoverable issue for %s: %s', self._target_label(), exc.log_message)
+                self._record_lookup_issue('PEGASUS subtype selection', exc.user_message)
         # STEP 4: Check if coordinate correction happened then search GALEX with corrected/converted coords
         galex_data = None
         try:
             self.query_galex(self.star_name, self.position, self.pm_corrected_coords, self.coords)
         except CatalogLookupError as exc:
             galex_data = exc
-            self.modal_error_msgs.append(exc.user_message)
+            logger.info('GALEX step finished with recoverable issue for %s: %s', self._target_label(), exc.log_message)
+            self._record_lookup_issue('MAST GALEX', exc.user_message)
         
         # STEP 5: Check that at least one main search returned data
         if nea_data is not None and galex_data is not None:
-            # This means that no data was returned, redirect to error page with link to manual form
-            self.modal_page_error_msg = 'Nothing found for your target in the NExSci database or the MAST GALEX database.'
+            target = self._target_label()
+            logger.warning(
+                'All external catalog lookups failed for %s. nea_error=%s galex_error=%s',
+                target,
+                nea_data.log_message,
+                galex_data.log_message,
+            )
+            self.modal_page_error_msg = f'Unable to retrieve any external catalog data for {target}.'
             return
+
+        logger.info(
+            'Lookup pipeline finished for %s: nea_success=%s galex_success=%s warnings=%s',
+            self._target_label(),
+            nea_data is None,
+            galex_data is None,
+            len(self.lookup_details),
+        )
         
     def convert_coords(self, position):
         """Converts the position attribute to equatorial coordinates (coords attribute) using the SkyCoord class from the astropy.coordinates module.
@@ -905,6 +968,7 @@ class StellarObject():
             Exception: If an error occurs during the SIMBAD search, or if no data is found for the specified star.
         """
         try:
+            logger.info('Querying SIMBAD for %s.', star_name)
             # Check if SIMBAD is accessible
             if not _service_is_available('simbad', "http://simbad.cds.unistra.fr/simbad/"):
                 raise CatalogLookupError(
@@ -926,6 +990,7 @@ class StellarObject():
                 # check if radial velocity exists
                 if not ma.is_masked(data['RV_VALUE']):
                     self.pm_data.rad_vel = data['RV_VALUE']
+                logger.info('SIMBAD lookup succeeded for %s: coords=%s pm_ra=%s pm_dec=%s plx=%s', star_name, self.coords, self.pm_data.pm_ra, self.pm_data.pm_dec, self.pm_data.plx)
                 return
             else:
                 raise CatalogLookupError(
@@ -970,6 +1035,7 @@ class StellarObject():
             Exception: If any unknown error occurs during search.
         """
         try:
+            logger.info('Querying NASA Exoplanet Archive for %s using %s search.', star_name or coords, 'name' if star_name else 'position')
             if not _service_is_available('nea', "https://exoplanetarchive.ipac.caltech.edu/"):
                 raise CatalogLookupError(
                     'The NASA Exoplanet Archive is currently down. Please enter stellar parameters manually or try again later.',
@@ -1003,6 +1069,7 @@ class StellarObject():
                     retriable_exceptions=(requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError),
                     operation_name=f'NEA region lookup for {coords}',
                 )
+            logger.info('NASA Exoplanet Archive returned %s row(s) for %s.', len(nea_data), star_name or coords)
             if len(nea_data) > 0:
                 data = nea_data[0]
                 if 2400 < data['st_teff'].unmasked.value < 5500:
@@ -1011,6 +1078,7 @@ class StellarObject():
                     self.mass = data['st_mass'].unmasked.value
                     self.rad = data['st_rad'].unmasked.value
                     self.dist = data['sy_dist'].unmasked.value
+                    logger.info('NASA Exoplanet Archive lookup succeeded for %s: teff=%s logg=%s mass=%s dist=%s rad=%s', star_name or coords, self.teff, self.logg, self.mass, self.dist, self.rad)
                     return
                 else:
                     raise CatalogLookupError(
@@ -1067,6 +1135,13 @@ class StellarObject():
         """
         # STEP 1: Query the MAST catalogs object by GALEX catalog & given ra and dec
         try:
+            logger.info(
+                'Querying MAST GALEX for %s using coords=%s pm_corrected_coords=%s position_input=%s',
+                star_name or coords,
+                coords,
+                pm_corrected_coords,
+                bool(position),
+            )
             # Check if SIMBAD is accessible
             if not _service_is_available('mast', "https://galex.stsci.edu/GR6/?page=mastform"):
                 raise CatalogLookupError(
@@ -1092,9 +1167,11 @@ class StellarObject():
                 )
             # STEP 2: If there are results returned and results within 0.167 arcmins, then start processing the data.
             if galex_data is not None:
+                logger.info('MAST GALEX returned %s row(s) for %s.', len(galex_data), star_name or coords)
                 if len(galex_data) > 0:
                     # Set minimum distance between target coordinates and actual coordinates of object.
                     MIN_DIST = galex_data['distance_arcmin'] < 0.167
+                    logger.info('MAST GALEX returned %s close match(es) within 0.167 arcmin for %s.', len(galex_data[MIN_DIST]), star_name or coords)
                     if len(galex_data[MIN_DIST]) > 0:
                         filtered_data = galex_data[MIN_DIST][0]
                         # create new fluxes object to store data in if there isn't one yet
@@ -1126,6 +1203,7 @@ class StellarObject():
                         saturated_fluxes = self.fluxes.check_saturated_fluxes()
                         if saturated_fluxes is not None:
                             self.modal_error_msgs.append(saturated_fluxes)
+                        logger.info('MAST GALEX lookup succeeded for %s: fuv=%s nuv=%s fuv_err=%s nuv_err=%s', star_name or coords, self.fluxes.fuv, self.fluxes.nuv, self.fluxes.fuv_err, self.fluxes.nuv_err)
                         return
                     else:
                         # No results within 0.167 arc minutes

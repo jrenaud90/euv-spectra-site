@@ -115,7 +115,10 @@ def _service_is_available(service_name, url):
 
     response = _http_get_with_retries(url)
     is_available = response.status_code == 200
-    cache.set(cache_key, is_available, timeout=EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT_SECONDS)
+    if is_available:
+        cache.set(cache_key, True, timeout=EXTERNAL_HEALTHCHECK_CACHE_TIMEOUT_SECONDS)
+    else:
+        logger.info('Not caching unavailable health-check result for %s (status=%s).', service_name, response.status_code)
     return is_available
 
 
@@ -702,9 +705,18 @@ class StellarObject():
     def _cached_lookup_is_retryable(self, payload):
         if payload is None:
             return False
-        if payload.get('modal_page_error_msg'):
-            return True
-        return False
+        return bool(
+            payload.get('modal_page_error_msg')
+            or payload.get('modal_error_msgs')
+            or payload.get('lookup_details')
+        )
+
+    def _should_cache_lookup_state(self):
+        return not (
+            getattr(self, 'modal_page_error_msg', None)
+            or getattr(self, 'modal_error_msgs', None)
+            or getattr(self, 'lookup_details', None)
+        )
 
     def _lookup_cache_key(self):
         if self.star_name:
@@ -832,8 +844,14 @@ class StellarObject():
         self._run_lookup_pipeline()
 
         if cache_key is not None:
-            if getattr(self, 'modal_page_error_msg', None):
-                logger.info('Skipping cache write for failed stellar lookup key %s.', cache_key)
+            if not self._should_cache_lookup_state():
+                logger.info(
+                    'Skipping cache write for non-clean stellar lookup key %s: page_error=%s warnings=%s details=%s',
+                    cache_key,
+                    bool(getattr(self, 'modal_page_error_msg', None)),
+                    len(getattr(self, 'modal_error_msgs', []) or []),
+                    len(getattr(self, 'lookup_details', []) or []),
+                )
             else:
                 cache.set(cache_key, self._serialize_lookup_state(), timeout=LOOKUP_CACHE_TIMEOUT_SECONDS)
                 logger.info('Cached stellar lookup result for key %s.', cache_key)

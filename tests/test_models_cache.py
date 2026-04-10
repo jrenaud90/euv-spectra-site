@@ -77,6 +77,28 @@ class ModelsCacheTestCase(unittest.TestCase):
         cached_payload = cache.get(stellar_object._lookup_cache_key())
         self.assertIsNone(cached_payload.get('modal_page_error_msg'))
 
+    @patch.object(StellarObject, '_run_lookup_pipeline', autospec=True)
+    def test_get_stellar_parameters_does_not_cache_lookup_with_warnings(self, mock_run_lookup_pipeline):
+        def populate_warning(stellar_object):
+            stellar_object.star_name = 'GJ 338 B'
+            stellar_object.coords = ('06 10 34.6', '+35 58 11')
+            stellar_object.teff = 4014.0
+            stellar_object.logg = 4.68
+            stellar_object.mass = 0.64
+            stellar_object.dist = 6.33
+            stellar_object.rad = 0.58
+            stellar_object.fluxes = GalexFluxes(fuv=10.0, nuv=20.0, fuv_err=1.0, nuv_err=2.0)
+            stellar_object.modal_error_msgs = ['GALEX warning']
+            stellar_object.lookup_details = [{'source': 'MAST GALEX', 'message': 'GALEX warning'}]
+
+        mock_run_lookup_pipeline.side_effect = populate_warning
+
+        stellar_object = StellarObject(star_name='GJ 338 B')
+        stellar_object.get_stellar_parameters()
+
+        self.assertEqual(stellar_object.modal_error_msgs, ['GALEX warning'])
+        self.assertIsNone(cache.get(stellar_object._lookup_cache_key()))
+
 
 if __name__ == '__main__':
     unittest.main()

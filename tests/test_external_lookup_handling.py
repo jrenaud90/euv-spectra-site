@@ -2,10 +2,17 @@ import unittest
 from unittest.mock import patch
 
 from euv_spectra_app.errors import CatalogLookupError
-from euv_spectra_app.models import StellarObject, _run_with_retries
+from euv_spectra_app.extensions import cache
+from euv_spectra_app.models import StellarObject, _run_with_retries, _service_healthcheck_key, _service_is_available
 
 
 class ExternalLookupHandlingTestCase(unittest.TestCase):
+    def setUp(self):
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
     @patch('euv_spectra_app.models.time.sleep')
     def test_run_with_retries_returns_after_transient_failure(self, mock_sleep):
         attempts = []
@@ -97,6 +104,18 @@ class ExternalLookupHandlingTestCase(unittest.TestCase):
                 {'source': 'MAST GALEX', 'message': 'GALEX unavailable for test.'},
             ],
         )
+
+    @patch('euv_spectra_app.models._http_get_with_retries')
+    def test_service_healthcheck_does_not_cache_unavailable_result(self, mock_http_get):
+        class Response:
+            status_code = 503
+
+        mock_http_get.return_value = Response()
+
+        result = _service_is_available('nea', 'https://example.invalid')
+
+        self.assertFalse(result)
+        self.assertIsNone(cache.get(_service_healthcheck_key('nea')))
 
 
 if __name__ == '__main__':

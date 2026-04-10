@@ -1,6 +1,6 @@
 {% from "macros/subfield.html" import render_subfield with context %}
 
-<form id="modal-form" action="{{ url_for('main.submit_modal_form') }}" method="POST" onsubmit="displayLoading(event='modal');">
+<form id="modal-form" action="{{ url_for('main.submit_modal_form') }}" method="POST" onsubmit="return displayLoading('modal');">
     <fieldset>
         {{ modal_form.csrf_token }}
         <div class="table-responsive">

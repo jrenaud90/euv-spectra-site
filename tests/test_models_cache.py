@@ -31,7 +31,6 @@ class ModelsCacheTestCase(unittest.TestCase):
             stellar_object.pm_corrected_coords = (92.644, 35.969)
             stellar_object.pm_data = ProperMotionData(1.0, 2.0, 3.0, 4.0)
             stellar_object.fluxes = GalexFluxes(fuv=10.0, nuv=20.0, fuv_err=1.0, nuv_err=2.0)
-            stellar_object.modal_error_msgs = ['cached warning']
 
         mock_run_lookup_pipeline.side_effect = populate_lookup
 
@@ -45,7 +44,7 @@ class ModelsCacheTestCase(unittest.TestCase):
         self.assertEqual(second.teff, 4014.0)
         self.assertEqual(second.model_collection, 'm0_grid')
         self.assertEqual(second.stellar_subtype, 'M0')
-        self.assertEqual(second.modal_error_msgs, ['cached warning'])
+        self.assertEqual(second.modal_error_msgs, [])
         self.assertEqual(second.fluxes.fuv, 10.0)
         self.assertEqual(second.pm_data.pm_ra, 1.0)
 

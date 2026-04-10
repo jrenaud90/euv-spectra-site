@@ -39,7 +39,7 @@ class Config(object):
     ADMIN_CHALLENGE_TTL_SECONDS = int(os.getenv("ADMIN_CHALLENGE_TTL_SECONDS", "300"))
     ADMIN_ALLOWED_COLLECTIONS = os.getenv(
         "ADMIN_ALLOWED_COLLECTIONS",
-        "model_parameter_grid,photosphere_models,mast_galex_times,m0_grid,m1_grid,m2_grid,m3_grid,m4_grid,m5_grid,m6_grid,m7_grid,m8_grid",
+        "model_parameter_grid,photosphere_models,mast_galex_times,fits_metadata,m0_grid,m1_grid,m2_grid,m3_grid,m4_grid,m5_grid,m6_grid,m7_grid,m8_grid",
     )
     MONGODB_ARCHIVE_DOWNLOAD_PATH = os.getenv(
         "MONGODB_ARCHIVE_DOWNLOAD_PATH",
@@ -49,6 +49,7 @@ class Config(object):
     FITS_S3_BUCKET = os.getenv("FITS_S3_BUCKET")
     FITS_S3_PREFIX = os.getenv("FITS_S3_PREFIX", "").strip("/")
     FITS_S3_REGION = os.getenv("FITS_S3_REGION") or os.getenv("AWS_REGION")
+    FITS_METADATA_CACHE_TIMEOUT = int(os.getenv("FITS_METADATA_CACHE_TIMEOUT", str(CACHE_TTL_SECONDS)))
 
     # for flask sessions
     SESSION_PERMANENT = False

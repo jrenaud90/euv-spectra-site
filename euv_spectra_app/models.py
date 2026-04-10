@@ -81,6 +81,18 @@ def normalize_star_name(star_name):
     return normalized_input
 
 
+def _query_nea_by_name(star_name):
+    corrected_star_name = star_name.replace("'", "''")
+    return _query_nea_without_logg_warning(
+        lambda: NasaExoplanetArchive.query_criteria(
+            table="pscomppars",
+            select="top 5 hostname, disc_refname, st_spectype, st_teff, st_logg, st_mass, st_rad, sy_dist, sy_jmag",
+            where=f"hostname like '%{corrected_star_name}%'",
+            order="hostname",
+        )
+    )
+
+
 def _retry_delay(attempt_number):
     return EXTERNAL_RETRY_BACKOFF_SECONDS * attempt_number
 
@@ -879,8 +891,6 @@ class StellarObject():
                 self.modal_page_error_msg = exc.user_message
                 return
         elif self.star_name:
-            self.star_name = normalize_star_name(self.star_name)
-            logger.info('Normalized star-name submission to %s.', self.star_name)
             # STEP Name2: Get coordinate and proper motion info from Simbad
             try:
                 self.query_simbad(self.star_name)
@@ -987,19 +997,22 @@ class StellarObject():
         """
         try:
             logger.info('Querying SIMBAD for %s.', star_name)
-            # Check if SIMBAD is accessible
-            if not _service_is_available('simbad', "http://simbad.cds.unistra.fr/simbad/"):
-                raise CatalogLookupError(
-                    'Error connecting to SIMBAD. Cannot get data to correct for proper motion. Please enter GALEX flux values manually or try again later.',
-                    log_message='SIMBAD health check reported an unavailable service state.',
-                    recoverable=True,
-                )
-            
             result_table = _run_with_retries(
                 lambda: customSimbad.query_object(star_name),
                 retriable_exceptions=(requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError),
                 operation_name=f'SIMBAD lookup for {star_name}',
             )
+            if (not result_table or len(result_table) == 0) and star_name:
+                normalized_star_name = normalize_star_name(star_name)
+                if normalized_star_name != star_name:
+                    logger.info('Retrying SIMBAD lookup for %s using normalized hostname %s.', star_name, normalized_star_name)
+                    result_table = _run_with_retries(
+                        lambda: customSimbad.query_object(normalized_star_name),
+                        retriable_exceptions=(requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError),
+                        operation_name=f'SIMBAD normalized lookup for {normalized_star_name}',
+                    )
+                    if result_table and len(result_table) > 0:
+                        self.star_name = normalized_star_name
             if result_table and len(result_table) > 0:
                 data = result_table[0]
                 self.coords = (data['RA'], data['DEC'])
@@ -1054,27 +1067,23 @@ class StellarObject():
         """
         try:
             logger.info('Querying NASA Exoplanet Archive for %s using %s search.', star_name or coords, 'name' if star_name else 'position')
-            if not _service_is_available('nea', "https://exoplanetarchive.ipac.caltech.edu/"):
-                raise CatalogLookupError(
-                    'The NASA Exoplanet Archive is currently down. Please enter stellar parameters manually or try again later.',
-                    log_message='NEA health check reported an unavailable service state.',
-                    recoverable=True,
-                )
-            
             if star_name:
-                corrected_star_name = star_name.replace("'", "''")
                 nea_data = _run_with_retries(
-                    lambda: _query_nea_without_logg_warning(
-                        lambda: NasaExoplanetArchive.query_criteria(
-                            table="pscomppars",
-                            select="top 5 disc_refname, st_spectype, st_teff, st_logg, st_mass, st_rad, sy_dist, sy_jmag",
-                            where=f"hostname like '%{corrected_star_name}%'",
-                            order="hostname",
-                        )
-                    ),
+                    lambda: _query_nea_by_name(star_name),
                     retriable_exceptions=(requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError),
                     operation_name=f'NEA lookup for {star_name}',
                 )
+                if len(nea_data) == 0:
+                    normalized_star_name = normalize_star_name(star_name)
+                    if normalized_star_name != star_name:
+                        logger.info('Retrying NEA lookup for %s using normalized hostname %s.', star_name, normalized_star_name)
+                        nea_data = _run_with_retries(
+                            lambda: _query_nea_by_name(normalized_star_name),
+                            retriable_exceptions=(requests.exceptions.RequestException, TimeoutError, ConnectionError, OSError),
+                            operation_name=f'NEA normalized lookup for {normalized_star_name}',
+                        )
+                        if len(nea_data) > 0:
+                            self.star_name = normalized_star_name
             elif coords:
                 nea_data = _run_with_retries(
                     lambda: _query_nea_without_logg_warning(
@@ -1160,14 +1169,6 @@ class StellarObject():
                 pm_corrected_coords,
                 bool(position),
             )
-            # Check if SIMBAD is accessible
-            if not _service_is_available('mast', "https://galex.stsci.edu/GR6/?page=mastform"):
-                raise CatalogLookupError(
-                    'Error connecting to MAST. Please enter GALEX flux values manually or try again later.',
-                    log_message='MAST health check reported an unavailable service state.',
-                    recoverable=True,
-                )
-            
             galex_data = None
             if star_name and pm_corrected_coords:
                 # if the original query was by star name and the proper motion corrected coords exist

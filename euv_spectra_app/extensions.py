@@ -37,10 +37,12 @@ def _init_logging():
         root_logger.handlers = gunicorn_error_logger.handlers
 
     app.logger.setLevel(log_level)
+    app.logger.propagate = False
     root_logger.setLevel(log_level)
     gunicorn_error_logger.setLevel(log_level)
 
     logger.setLevel(log_level)
+    logger.propagate = False
     app.logger.info('Pegasus logging initialized at level %s.', logging.getLevelName(log_level))
 
 cache_dir = app.config.get('CACHE_DIR')
@@ -150,6 +152,7 @@ db = client.get_database(my_db)
 model_parameter_grid = db.model_parameter_grid
 photosphere_models = db.photosphere_models
 mast_galex_times = db.mast_galex_times
+fits_metadata = db.fits_metadata
 m0_grid = db.m0_grid
 m1_grid = db.m1_grid
 m2_grid = db.m2_grid

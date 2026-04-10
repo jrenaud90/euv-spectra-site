@@ -212,3 +212,7 @@ class AdminDeleteForm(FlaskForm):
     filter_json = TextAreaField('Mongo Filter (JSON)', validators=[DataRequired()], default='{}')
     confirm_collection = StringField('Type the collection name to confirm full deletion')
     submit = SubmitField('Delete Data')
+
+
+class AdminResetFitsMetadataForm(FlaskForm):
+    submit = SubmitField('Reset FITS Metadata State')

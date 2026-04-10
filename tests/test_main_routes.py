@@ -107,7 +107,7 @@ class MainRoutesTestCase(unittest.TestCase):
         self.assertEqual(response.get_data(as_text=True), 'home rendered')
         mock_render_template.assert_called_once()
 
-    @patch('euv_spectra_app.main.routes.StellarObject.get_stellar_parameters')
+    @patch('euv_spectra_app.main.routes.StellarObject.get_stellar_parameters', autospec=True)
     def test_homepage_post_redirects_to_error_with_lookup_details_in_session(self, mock_get_stellar_parameters):
         def populate_failure(stellar_object):
             stellar_object.modal_page_error_msg = 'Unable to retrieve any external catalog data for GJ 338 B.'
@@ -217,7 +217,7 @@ class MainRoutesTestCase(unittest.TestCase):
         body = response.get_data(as_text=True)
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn('What failed', body)
+        self.assertIn('What Failed', body)
         self.assertIn('NASA Exoplanet Archive', body)
         self.assertIn('No GALEX observations found.', body)
 

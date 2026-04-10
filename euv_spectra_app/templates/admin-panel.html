@@ -4,6 +4,7 @@
 {% block title %}Admin Panel{% endblock %}
 
 {% block content %}
+    {% include 'partials/loading_screen.html' %}
     <div class="row mt-4 pt-4 g-4">
         <div class="col-12 d-flex justify-content-between align-items-center flex-wrap gap-3">
             <div>
@@ -19,7 +20,7 @@
             <div class="card shadow-sm mb-4">
                 <div class="card-body">
                     <h3 class="h5 mb-3">Load Data</h3>
-                    <form method="POST" enctype="multipart/form-data">
+                    <form method="POST" enctype="multipart/form-data" onsubmit="return displayLoading('admin');">
                         {{ upload_form.hidden_tag() }}
                         <div class="mb-3">
                             {{ upload_form.collection.label(class_='form-label') }}
@@ -57,7 +58,7 @@
             <div class="card shadow-sm">
                 <div class="card-body">
                     <h3 class="h5 mb-3">Delete Data</h3>
-                    <form method="POST">
+                    <form method="POST" onsubmit="return displayLoading('admin');">
                         {{ delete_form.hidden_tag() }}
                         <div class="mb-3">
                             {{ delete_form.collection.label(class_='form-label') }}
@@ -105,6 +106,19 @@
                 </div>
             </div>
 
+            <div class="card shadow-sm mb-4">
+                <div class="card-body">
+                    <h3 class="h5 mb-3">FITS Metadata State</h3>
+                    <p class="text-muted small mb-3">Pegasus stores resolved FITS availability in cache and MongoDB so results pages do not need to probe storage backends repeatedly.</p>
+                    <p class="mb-2"><strong>Indexed Records:</strong> {{ fits_metadata_summary.documents }}</p>
+                    <p class="mb-3"><strong>Last Checked:</strong> {{ fits_metadata_summary.last_checked_at or 'Never' }}</p>
+                    <form method="POST" action="{{ url_for('main.admin_reset_fits_metadata') }}" onsubmit="return displayLoading('admin');">
+                        {{ reset_fits_form.hidden_tag() }}
+                        {{ reset_fits_form.submit(class_='btn btn-outline-danger') }}
+                    </form>
+                </div>
+            </div>
+
             <div class="card shadow-sm h-100">
                 <div class="card-body">
                     <h3 class="h5 mb-3">Collection Overview</h3>
@@ -142,6 +156,7 @@
 {% endblock %}
 
 {% block script %}
+    <script src="{{ url_for('static', filename='js/loader.js') }}"></script>
     <script>
         (function () {
             const collectionSelect = document.getElementById('upload-collection');

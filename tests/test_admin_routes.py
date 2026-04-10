@@ -36,6 +36,7 @@ class AdminRoutesTestCase(unittest.TestCase):
             session_state[admin_utils.ADMIN_AUTHENTICATED_AT_KEY] = 4102444800
 
     @patch('euv_spectra_app.main.routes.render_template', side_effect=lambda template_name, **context: template_name)
+    @patch('euv_spectra_app.main.routes.get_fits_metadata_summary', return_value={'documents': 0, 'last_checked_at': None})
     @patch('euv_spectra_app.main.routes.get_collection_summaries', return_value=[])
     @patch('euv_spectra_app.main.routes.get_allowed_collection_names', return_value=['m0_grid'])
     @patch('euv_spectra_app.main.routes.db.get_collection')
@@ -44,6 +45,7 @@ class AdminRoutesTestCase(unittest.TestCase):
         mock_get_collection,
         mock_allowed_names,
         mock_collection_summaries,
+        mock_fits_summary,
         mock_render_template,
     ):
         self._authenticate_admin_session()
@@ -68,6 +70,7 @@ class AdminRoutesTestCase(unittest.TestCase):
         mock_collection.insert_many.assert_not_called()
 
     @patch('euv_spectra_app.main.routes.render_template', side_effect=lambda template_name, **context: template_name)
+    @patch('euv_spectra_app.main.routes.get_fits_metadata_summary', return_value={'documents': 0, 'last_checked_at': None})
     @patch('euv_spectra_app.main.routes.get_collection_summaries', return_value=[])
     @patch('euv_spectra_app.main.routes.get_allowed_collection_names', return_value=['m0_grid'])
     @patch('euv_spectra_app.main.routes.db.get_collection')
@@ -76,6 +79,7 @@ class AdminRoutesTestCase(unittest.TestCase):
         mock_get_collection,
         mock_allowed_names,
         mock_collection_summaries,
+        mock_fits_summary,
         mock_render_template,
     ):
         self._authenticate_admin_session()
@@ -128,6 +132,16 @@ class AdminRoutesTestCase(unittest.TestCase):
             response.headers['Content-Disposition'],
         )
         self.assertEqual(response.get_data(), b'archive-bytes')
+
+    @patch('euv_spectra_app.main.routes.clear_fits_metadata_state', return_value=4)
+    def test_admin_reset_fits_metadata_redirects_to_admin_panel(self, mock_clear_fits_metadata_state):
+        self._authenticate_admin_session()
+
+        response = self.client.post('/admin/reset-fits-metadata', data={'reset-submit': '1'})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('/admin', response.location)
+        mock_clear_fits_metadata_state.assert_called_once_with()
 
 
 if __name__ == '__main__':

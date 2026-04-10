@@ -13,8 +13,8 @@ from datetime import timedelta
 from euv_spectra_app.admin_utils import admin_auth_configured, admin_required, clear_admin_session, get_allowed_collection_names, get_collection_summaries, is_admin_authenticated, issue_admin_challenge, mark_admin_authenticated, parse_json_document, parse_uploaded_documents, verify_admin_signature
 from euv_spectra_app.errors import PegasusError
 from euv_spectra_app.extensions import *
-from euv_spectra_app.fits_storage import fits_asset_exists, get_model_fits_bytes, get_test_fits_bytes, infer_model_subtype_from_filename, is_test_fits_filename
-from euv_spectra_app.main.forms import AdminDeleteForm, AdminSignatureForm, AdminUploadForm, ManualForm, StarNameForm, PositionForm, ModalForm, ContactForm
+from euv_spectra_app.fits_storage import clear_fits_metadata_state, fits_asset_exists, get_fits_metadata_summary, get_model_fits_bytes, get_test_fits_bytes, infer_model_subtype_from_filename, is_test_fits_filename
+from euv_spectra_app.main.forms import AdminDeleteForm, AdminResetFitsMetadataForm, AdminSignatureForm, AdminUploadForm, ManualForm, StarNameForm, PositionForm, ModalForm, ContactForm
 from euv_spectra_app.models import StellarObject, PegasusGrid
 from euv_spectra_app.helpers import build_flux_context, create_plotly_graph, deserialize_stellar_object, from_json, insert_data_into_form, remove_objs_from_obj_dict, serialize_stellar_object, to_json
 main = Blueprint("main", __name__)
@@ -740,6 +740,8 @@ def admin_panel():
     delete_form = AdminDeleteForm(prefix='delete')
     delete_form.collection.choices = collection_choices
 
+    reset_fits_form = AdminResetFitsMetadataForm(prefix='reset')
+
     if request.method == 'POST' and request.form.get('upload-submit'):
         if upload_form.validate_on_submit():
             collection_name = upload_form.collection.data
@@ -781,9 +783,25 @@ def admin_panel():
         'admin-panel.html',
         upload_form=upload_form,
         delete_form=delete_form,
+        reset_fits_form=reset_fits_form,
         collection_summaries=get_collection_summaries(),
+        fits_metadata_summary=get_fits_metadata_summary(),
         database_name=db.name,
     )
+
+
+@main.route('/admin/reset-fits-metadata', methods=['POST'])
+@admin_required
+def admin_reset_fits_metadata():
+    """Clear the persisted FITS availability metadata so it can be rebuilt lazily."""
+    reset_fits_form = AdminResetFitsMetadataForm(prefix='reset')
+    if not reset_fits_form.validate_on_submit():
+        flash('Unable to reset FITS metadata state. Refresh and try again.', 'danger')
+        return redirect(url_for('main.admin_panel'))
+
+    deleted_count = clear_fits_metadata_state()
+    flash(f'Reset FITS metadata state. Removed {deleted_count} persisted metadata records.', 'success')
+    return redirect(url_for('main.admin_panel'))
 
 
 @main.route('/admin/sample-json', methods=['GET'])
